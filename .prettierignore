@@ -1,0 +1,12 @@
+node_modules/
+pnpm-lock.yaml
+.next/
+out/
+build/
+.env*
+public/
+lib/generated/
+prisma/migrations/
+**/*.d.ts
+.claude/
+supabase/

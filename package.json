@@ -1,0 +1,60 @@
+{
+  "name": "operationshackathon26",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": "24.x"
+  },
+  "packageManager": "pnpm@11.7.0",
+  "scripts": {
+    "build": "next build",
+    "build:local": "dotenv -e .env.local -- next build",
+    "dev:local": "dotenv -e .env.local -- next dev -p 3001",
+    "dev:prod": "dotenv -e .env.production -- next dev",
+    "dev:stack": "./dev-stack.sh",
+    "start": "next start",
+    "start:local": "dotenv -e .env.local -- next start -p 3001",
+    "format": "eslint --fix --cache --cache-location node_modules/.cache/eslint/ . && prettier --write . --cache",
+    "format:check": "prettier --check . --cache",
+    "lint": "eslint .",
+    "typecheck": "next typegen && tsc --noEmit",
+    "postinstall": "prisma generate",
+    "prisma:generate": "prisma generate",
+    "prisma:validate": "prisma validate",
+    "prisma:migrate:create": "dotenv -e .env.local -- prisma migrate dev --create-only --name",
+    "prisma:migrate:deploy:local": "dotenv -e .env.local -- prisma migrate deploy",
+    "prisma:migrate:deploy:prod": "dotenv -e .env.production -- prisma migrate deploy",
+    "prisma:migrate:status:local": "dotenv -e .env.local -- prisma migrate status",
+    "prisma:migrate:status:prod": "dotenv -e .env.production -- prisma migrate status",
+    "prisma:studio:local": "dotenv -e .env.local -- prisma studio",
+    "prisma:studio:prod": "dotenv -e .env.production -- prisma studio",
+    "seed:generate": "dotenv -e .env.production -- tsx scripts/setup/generate-seed.ts",
+    "full-local-reset": "supabase start && supabase db reset",
+    "full-local-reset:re-seed": "pnpm seed:generate && pnpm full-local-reset"
+  },
+  "dependencies": {
+    "@prisma/adapter-pg": "7.10.1",
+    "@prisma/client": "7.10.1",
+    "next": "16.4.3",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/turbopack": "^4.3.3",
+    "@types/node": "^24.19.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "dotenv-cli": "^11.0.0",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "16.4.3",
+    "eslint-plugin-no-relative-import-paths": "^1.7.3",
+    "eslint-plugin-simple-import-sort": "^14.0.0",
+    "prettier": "^3.9.10",
+    "prettier-plugin-tailwindcss": "^0.8.1",
+    "prisma": "7.10.1",
+    "supabase": "2.122.0",
+    "tailwindcss": "^4.3.3",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  }
+}
