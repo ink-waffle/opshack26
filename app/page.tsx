@@ -1,69 +1,168 @@
-import Image from 'next/image';
+import type { Metadata } from 'next';
+import { Suspense } from 'react';
 
-export default function Home() {
+import { AutoRefresh } from '@/components/control/AutoRefresh';
+import {
+  AgentList,
+  DecisionQueueRow,
+  RecentList,
+  SectionHeader,
+  TriageList,
+} from '@/components/control/QueueRows';
+import { PageContainer } from '@/components/ui/AppShell';
+import { ButtonLink } from '@/components/ui/Button';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { Icon } from '@/components/ui/Icon';
+import { Skeleton, SkeletonCard } from '@/components/ui/Skeleton';
+import { formatDayTime, formatTime, plural } from '@/lib/control-room/format';
+import { getControlRoom } from '@/lib/control-room/home';
+
+export const metadata: Metadata = { title: 'Control room' };
+
+export default function ControlRoomPage() {
   return (
-    <div className='flex flex-1 flex-col items-center justify-center bg-zinc-50 font-sans dark:bg-black'>
-      <main className='flex w-full max-w-3xl flex-1 flex-col items-center justify-between bg-white px-16 py-32 sm:items-start dark:bg-black'>
-        <Image
-          className='h-5 w-[100px] dark:invert'
-          src='/next.svg'
-          alt='Next.js logo'
-          width={100}
-          height={20}
-          priority
+    <PageContainer>
+      <Suspense fallback={<ControlRoomSkeleton />}>
+        <ControlRoom />
+      </Suspense>
+    </PageContainer>
+  );
+}
+
+async function ControlRoom() {
+  const data = await getControlRoom();
+  const { counts, clock, now, watchman } = data;
+  const headline =
+    counts.decisions === 0
+      ? 'Nothing needs your decision'
+      : `${counts.decisions === 1 ? '1 order needs' : `${counts.decisions} orders need`} your decision`;
+  const lastCheck = watchman.lastSignalAt
+    ? formatTime({ at: new Date(watchman.lastSignalAt) })
+    : null;
+
+  return (
+    <>
+      <AutoRefresh />
+      <header className='pt-8 pb-7'>
+        <h1 className='font-display text-ink text-3xl font-extrabold tracking-tight'>{headline}</h1>
+        <ul className='text-secondary mt-3 flex flex-wrap items-center gap-x-5 gap-y-1.5 text-base'>
+          <Counter dot='bg-warn' value={counts.decisions} label='need a decision' />
+          <Counter
+            dot='bg-info'
+            value={counts.agents}
+            label={counts.agents === 1 ? 'agent working' : 'agents working'}
+          />
+          <Counter dot='bg-grey-400' value={counts.triage} label='worth a look' />
+          <Counter
+            dot='bg-ok'
+            value={counts.quiet}
+            label='quiet'
+            title={`${counts.quiet} of ${counts.active} active orders have no open card and no agent run.`}
+          />
+        </ul>
+      </header>
+
+      <section aria-labelledby='decisions'>
+        <SectionHeader
+          title='Needs your decision'
+          note='Sorted by when the decision is due. The reason sits next to the clock.'
         />
-        <div className='flex flex-col items-center gap-6 text-center sm:items-start sm:text-left'>
-          <h1 className='max-w-xs text-3xl leading-10 font-semibold tracking-tight text-black dark:text-zinc-50'>
-            To get started, edit the{' '}
-            <code className='rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]'>
-              page.tsx
-            </code>{' '}
-            file.
-          </h1>
-          <p className='max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400'>
-            Looking for a starting point or more instructions? Head over to{' '}
-            <a
-              href='https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app'
-              className='font-medium text-zinc-950 dark:text-zinc-50'
-            >
-              Templates
-            </a>{' '}
-            or the{' '}
-            <a
-              href='https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app'
-              className='font-medium text-zinc-950 dark:text-zinc-50'
-            >
-              Learning
-            </a>{' '}
-            center.
-          </p>
-        </div>
-        <div className='flex flex-col gap-4 text-base font-medium sm:flex-row'>
-          <a
-            className='bg-foreground text-background flex h-12 w-full items-center justify-center gap-2 rounded-full px-5 transition-colors hover:bg-[#383838] md:w-[158px] dark:hover:bg-[#ccc]'
-            href='https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app'
-            target='_blank'
-            rel='noopener noreferrer'
+        {data.decisions.length ? (
+          <ul className='grid gap-2.5'>
+            {data.decisions.map((row) => (
+              <DecisionQueueRow key={row.id} row={row} clock={clock} />
+            ))}
+          </ul>
+        ) : (
+          <EmptyState
+            title='No decisions waiting'
+            action={
+              <ButtonLink href='/orders' size='sm' icon='search'>
+                Show all orders
+              </ButtonLink>
+            }
           >
-            <Image
-              className='h-[14px] w-4 dark:invert'
-              src='/vercel.svg'
-              alt='Vercel logomark'
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className='flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] md:w-[158px] dark:border-white/[.145] dark:hover:bg-[#1a1a1a]'
-            href='https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app'
-            target='_blank'
-            rel='noopener noreferrer'
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
+            {counts.agents
+              ? `Agents are working on ${plural({ count: counts.agents, one: 'order' })}; they bring a card here when a person must choose. `
+              : 'No agent is working on an order right now. '}
+            The watchman reads every new message and checks {counts.active} active orders against
+            the clock every minute.
+          </EmptyState>
+        )}
+      </section>
+
+      <div className='mt-12 grid items-start gap-x-8 gap-y-12 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]'>
+        <section aria-labelledby='triage'>
+          <SectionHeader
+            title='Worth a look'
+            count={data.triage.length}
+            note='An agent handed these back, or no playbook fits them. Each card says why and what was found.'
+          />
+          {data.triage.length ? (
+            <TriageList rows={data.triage} clock={clock} />
+          ) : (
+            <EmptyState size='inline' icon='inbox' title='Nothing unusual came in'>
+              Messages no playbook covers, and orders an agent hands back (an error, a rejection, a
+              card nobody decided in time), land here with what was found.
+            </EmptyState>
+          )}
+        </section>
+
+        <section aria-labelledby='agents'>
+          <SectionHeader title='Agents on it' count={data.agents.length} />
+          {data.agents.length ? (
+            <AgentList rows={data.agents} now={now} />
+          ) : (
+            <EmptyState size='inline' icon='agent' title='No agent is working right now'>
+              When the watchman routes an order to a playbook, its run shows here step by step.
+            </EmptyState>
+          )}
+          {data.recent.length > 0 && (
+            <div className='mt-8'>
+              <h3 className='text-secondary mb-1.5 text-sm font-semibold'>Decided recently</h3>
+              <RecentList rows={data.recent} now={now} />
+            </div>
+          )}
+        </section>
+      </div>
+
+      <footer className='border-line text-muted mt-14 flex flex-wrap items-center gap-x-3 gap-y-1 border-t pt-4 text-sm'>
+        <Icon name='shield' size={14} />
+        <span>
+          Watchman: {counts.active} active orders under watch
+          {lastCheck ? ` · last flag at ${lastCheck}` : ' · nothing flagged yet'} ·{' '}
+          {plural({ count: watchman.signalsLastHour, one: 'flag' })} in the last simulated hour ·
+          checks every minute and on every message.
+        </span>
+        <span className='sr-only'>Simulated now {formatDayTime({ at: now })}</span>
+      </footer>
+    </>
+  );
+}
+
+function Counter(props: { dot: string; value: number; label: string; title?: string }) {
+  const { dot, value, label, title } = props;
+  return (
+    <li className='flex items-center gap-2' title={title}>
+      <span aria-hidden='true' className={`size-2 rounded-full ${dot}`} />
+      <span>
+        <span className='text-ink font-semibold tabular-nums'>{value}</span> {label}
+      </span>
+    </li>
+  );
+}
+
+function ControlRoomSkeleton() {
+  return (
+    <div aria-busy='true'>
+      <div className='grid gap-3 pt-8 pb-7'>
+        <Skeleton className='h-9 w-96 max-w-full' />
+        <Skeleton className='h-4 w-80 max-w-full' />
+      </div>
+      <Skeleton className='mb-4 h-6 w-48' />
+      <div className='grid gap-2.5'>
+        <SkeletonCard />
+      </div>
     </div>
   );
 }

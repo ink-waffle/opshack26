@@ -10,3 +10,4 @@ prisma/migrations/
 **/*.d.ts
 .claude/
 supabase/
+.trigger/

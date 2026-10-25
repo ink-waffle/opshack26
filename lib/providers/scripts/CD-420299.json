@@ -1,0 +1,26 @@
+{
+  "orderRef": "CD-420299",
+  "notes": "Driver drv-140 (home Pori). Consistent with msg-xb315bf2f67bbfb61: the later sailing works if the overnight stop and return travel are arranged. Provider reconciliation falls through to the deterministic mock (no booking from the 07:10 request).",
+  "replies": [
+    {
+      "party": "driver",
+      "match": "keep the car|custody|until (the )?27|early|keys",
+      "reply": "I can keep the car and keys until the 27th if the hotel nights in Helsinki are covered and the hotel has secured parking. An earlier handover would suit me better, I would rather head home to Pori sooner."
+    },
+    {
+      "party": "driver",
+      "match": "hotel|overnight|stay|night|rest",
+      "reply": "Yes, a hotel near the Hamburg terminal on the night of 23 Oct works for me. Secured parking please, the car stays with me. I still plan to collect in Leipzig at 09:00 on the 23rd."
+    },
+    {
+      "party": "driver",
+      "match": "return|home|train|pori",
+      "reply": "After the handover I need to get back to Pori. A train from Helsinki is fine for me."
+    },
+    {
+      "party": "driver",
+      "match": ".",
+      "reply": "Understood. I have not changed my pickup time (23 Oct 09:00 in Leipzig). Please send me the ferry reference once it is booked."
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 allowBuilds:
+  '@depot/cli': false
   '@prisma/engines': true
   esbuild: true
   prisma: true

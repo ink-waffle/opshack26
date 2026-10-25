@@ -1,0 +1,17 @@
+{
+  "orderRef": "CD-420442",
+  "notes": "Pickup-unconfirmed demo (S3 via M2): driver drv-165 does not answer; the Stockholm dealer has not seen him. Booked ferry WBV-FERRY-00442, check-in cutoff 22 Oct 15:30Z, about 1 h drive: the driver must leave by 14:30Z.",
+  "replies": [
+    {
+      "party": "driver",
+      "match": ".",
+      "noReply": true,
+      "reply": ""
+    },
+    {
+      "party": "site",
+      "match": ".",
+      "reply": "No driver has come for the Bentley Continental GT today and nobody called us. The car is ready in our stock with the keys at reception. We release cars until 17:00 today."
+    }
+  ]
+}

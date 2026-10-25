@@ -1,0 +1,761 @@
+# Exception playbooks for the Car Delivery Control Room (Bahn challenge, fictional data)
+# Representation: detection rule table + LLM classifier -> routing table -> per-trigger playbooks
+# (ordered checklists executed by an LLM agent with tools) -> shared deterministic chain calculator
+# -> deterministic authority/evidence gate -> fixed decision card.
+# Step types: D = deterministic from records, L = LLM (read/judge/draft), X = external tool (mockable), H = human.
+# Field paths refer to dataset/data/*.jsonl tables. Case refs are order references (CD-...).
+
+version: "0.1"
+snapshot: "2026-10-21T09:00:00Z"
+
+step_types:
+  D: deterministic, computable from records
+  L: language model reads, judges or drafts text
+  X: external tool (ferry/rail/hotel search, provider reconciliation, driver market, roadside); mockable
+  H: human decision
+
+evidence_levels:   # ordered weakest -> strongest; a claim may only be asserted at the level of its cited record
+  - REPORTED          # message from driver/customer/site/handoff contact; custody_reports; travel_confirmations
+  - ESTIMATED         # tracking ETA, terminal_road_estimates, SYSTEM windows
+  - QUOTED            # travel_options (with checked_at age)
+  - BOOKED            # travel_reservations.status=BOOKED, work_assignments ASSIGNED
+  - SITE_CONFIRMED    # site_contact message about this order (not site profile)
+  - GATE_CONFIRMED    # ferry_terminal_events CHECK_IN_ACCEPTED
+  - PHYSICAL_EVENT    # vehicle.picked_up / vehicle.delivered events
+  - HUMAN_VERIFIED    # endpoint.instruction_verified, proof APPROVED, document VERIFIED
+
+guardrails:
+  - id: G1
+    rule: "No customer contact without approval; customer-facing text is a draft until a person approves."
+    check: D
+    evidence: ["PARTICIPANT-BRIEF rules", "all customer messages in packet are operator-authored"]
+  - id: G2
+    rule: "Commitments need approval: book/cancel travel, change pickup slot/delivery window/promise, add cost, change assignment, publish/withdraw/reprice offer."
+    check: D
+    evidence: ["brief rules", "CD-420404 market.fee_decided evt-xd6d17997f1c750a2", "CD-420702 assignment.cancelled evt-x8305c9562cdb3889"]
+  - id: G3
+    rule: "Evidence level: any payload field or sentence asserting a state must cite a record of at least that evidence level; quotes, reports, ETAs, photos never upgrade a claim."
+    check: D
+    blocks_fields: [mark_boarding_confirmed, booked, signed, issued, attribution, cleared_to_drive, picked_up, delivered]
+    evidence: ["CD-420020 agent-x40ab609877909161 EDITED mark_boarding_confirmed true->false", "CD-420449 agent-xf4800bb1b907cf89 note 'Do not represent the replacement as booked'", "CD-420194 agent-xf874ddfecf02bb68 note 'Do not tell the customer an invoice exists until the record is found'", "CD-420123 msg-xe26b0b53692c1320 prepared CMR != signed"]
+  - id: G4
+    rule: "Forbidden for the agent: mechanical/driving advice in warning or accident cases; liability attribution; naming another customer's job to a buyer; substituting a 'similar' vehicle."
+    check: "D (field flags) + L (message classifier)"
+    evidence: ["CD-420322 agent-x95169653143f1607 EDITED 'Remove restart advice'", "CD-420055 agent-xaa0af5ec9f775363 REJECTED", "CD-420399 msg-xc5d698394bbc5a9c 'without naming the driver's earlier customer's trip'", "CD-420593 msg-x5276d8f5eeec4ae5 'please do not substitute a different car'"]
+  - id: G5
+    rule: "Quote freshness: a travel_option older than 90 minutes at execution cannot be booked or shown as capacity (refresh first); 60-90 minutes shows a warning."
+    check: D
+    parameter: {block_quote_age_minutes: 90, warn_quote_age_minutes: 60}
+    evidence: ["CD-420194 agent-x3151927d69c76a10 EDITED 'Do not select a crossing from an unrefreshed list' (no quote existed within the window at proposal time)", "backtest of 8 quote-sourced bookings: ages 8, 20, 38, 38, 38, 57, 57, 62 min, none failed for capacity; a 60 min block would flag CD-420442 res-xa3d84f5d5f6f168e (62 min)"]
+  - id: G6
+    rule: "Promise invariance: never change or present a new customer promise until the replacement is booked and the customer approved."
+    check: D
+    evidence: ["CD-420299 agent-x4ac988b20000595f note 'retain the customer promise until a booking is confirmed'", "CD-420154/CD-420603 change_promise:false", "CD-420702 evt-xe03ba1c8477204ca customer_delivery_promise_changed:false"]
+  - id: G7
+    rule: "No cancel before replacement: keep the current booking/assignment until a replacement is confirmed."
+    check: D
+    evidence: ["CD-420449 cancel_current:false", "CD-420603 msg-x7074c5c677e14192 'Keep the original booking active'", "CD-420399 keep_current_assignment_until_decision"]
+  - id: G8
+    rule: "Recheck current state before any write (dependency.execution_policy)."
+    check: D
+    evidence: ["all 14 agent_proposals carry RECHECK_CURRENT_STATE_BEFORE_WRITE"]
+  - id: G9
+    rule: "Unknown-outcome lock: no retry or alternative purchase while a prior attempt's outcome is unreconciled."
+    check: D
+    evidence: ["CD-420299 agent-x4ac988b20000595f execution FAILED timeout", "alert-x91c0e327c701d1e7 ack 'Reconcile the timed-out booking before offering a replacement sailing'"]
+  - id: G10
+    rule: "Third-party custody of car or keys only with owner approval; a bundle offer does not authorise early collection of the second car."
+    check: D
+    evidence: ["CD-420324 msg-xe59787a31fb676c5", "CD-420384 custody-x96b53a7c6cc48555 EARLY_COLLECTION_DECLINED"]
+  - id: G11
+    rule: "Every fact shown to a person carries source record, timestamp and evidence level."
+    check: D
+    evidence: ["brief judging: 'Can you see where every fact came from?'"]
+
+action_classes:   # authority gate (deterministic). 'autonomy_path' = what could be granted later with track record
+  READ:              {approval: none, examples: [record lookups, chain calculation]}
+  ASK_DRIVER:        {approval: none, examples: ["are you safe?", "minutes to the vehicle gate?", "confirm by 10:00"]}
+  ASK_SITE:          {approval: none, examples: ["is VIN in your release queue?", "who holds the keys?"]}
+  ASK_PROVIDER:      {approval: none, examples: [reconcile booking reference, refresh capacity, rollover terms]}
+  INSTRUCT_HOLD:     {approval: "none, notify owner desk", examples: ["keep the car stopped", "keep the keys", "do not hand over without a named receiver"]}
+  INSTRUCT_CHANGE:   {approval: required, autonomy_path: "low-cost same-day changes after track record"}
+  CUSTOMER_MESSAGE:  {approval: "draft -> required", autonomy_path: "factual status replies (P18) first"}
+  BOOK_TRAVEL:       {approval: required, autonomy_path: "per-cost threshold after track record"}
+  CANCEL_TRAVEL:     {approval: required}
+  CHANGE_WINDOW:     {approval: "required (+ customer approval for promises)", autonomy_path: "pickup-slot moves already agreed by site and customer"}
+  CHANGE_ASSIGNMENT: {approval: required, autonomy_path: none}
+  MARKET:            {approval: required, autonomy_path: "pause/withdraw offer on explicit site 'do not send a driver'"}
+  RECORD_ASSERTION:  {approval: "G3 evidence gate then required", autonomy_path: "resolve-only actions with matching evidence type"}
+  MONEY:             {approval: human_only, autonomy_path: none}
+  FORBIDDEN:         {approval: blocked, members: [mechanical_advice, liability_attribution, disclose_other_customer, vehicle_substitution, quote_as_booking]}
+
+monitors:   # deterministic detection; backtest on snapshot (scratchpad/scripts/monitors.py)
+  - id: M1
+    name: ferry_cutoff_soon_unconfirmed
+    rule: "travel_reservations kind=FERRY status=BOOKED, check_in_cutoff_at within 6h, check_in_confirmation != CONFIRMED_BY_GATE_SCAN"
+    backtest: {hits: 4, on_case_orders: [CD-420603], on_quiet_orders: [CD-420075, CD-420324, CD-420439]}
+    route: {agent_task: ASK_DRIVER, person_card_if: "driver gate ETA later than cutoff or no reply 60 min before cutoff"}
+  - id: M2
+    name: slot_started_not_started
+    rule: "work_assignments.status=ASSIGNED and SELECTED_PICKUP_SLOT.start_at <= now + 60 min"
+    backtest: {hits: 1, on_case_orders: [CD-420593], retro: "CD-420702 would fire 2026-10-21T06:00Z, 1h47m before driver message msg-xb32ac1edf6e6f6b7"}
+    route: {agent_task: ASK_DRIVER, then: P4}
+  - id: M3
+    name: driver_chain_conflict
+    rule: "for each driver, active assignments ordered by slot start; positioning.previous_order_id or planned_release_city != actual preceding assignment / its delivery city"
+    backtest: {hits: 2, on_case_orders: [CD-420089], on_quiet_orders: [CD-420311]}
+    route: {person_card: P4}
+  - id: M4
+    name: positioning_not_evidenced
+    rule: "consecutive duties in different cities and no positioning reservation"
+    backtest: {hits: 6, on_case_orders: [CD-420399, CD-420656], on_quiet_orders: [CD-420405, CD-420719, CD-420311, CD-420579]}
+    route: {agent_task: "prepare positioning quotes", person_card_if: "gap < 24h or cross-border"}
+  - id: M5a
+    name: signed_handover_doc_missing
+    rule: "order DELIVERED and documents kind=SIGNED_HANDOVER status=MISSING"
+    backtest: {hits: 1, on_case_orders: [CD-420164], note: "broad variant 'site requires_signed_release and no signed doc row' hits 6 incl. 4 quiet orders without any doc row -> rejected as noisy"}
+    route: {person_card: P12}
+  - id: M5b
+    name: proof_unreviewed_24h
+    rule: "proofs status=SUBMITTED and submitted_at older than 24h"
+    backtest: {hits: 21, on_case_orders: 9, on_quiet_orders: 12}
+    route: {queue: evidence_backlog, person_card: never_alone, pulled_into: P13}
+  - id: M6
+    name: overdue_work_item
+    rule: "work_items status != DONE and due_at < now"
+    backtest: {hits: 3, orders: {CD-420449: "21.6h", CD-420164: "45.4h", CD-420437: "0.0h"}}
+    route: {escalate: owner_lead}
+  - id: M7
+    name: inbound_unanswered_4h
+    rule: "external PUBLIC message with no later operator/agent PUBLIC reply within 4h"
+    backtest: {hits: 11, on_case_orders: 9, on_quiet_orders: 2, false_positive_note: "CD-420177 site confirmations needed no reply"}
+    route: {agent_task: "L triage: does this need a reply or an action?"}
+  - id: M8
+    name: tracking_missing_or_stale
+    rule: "assignment IN_PROGRESS with no tracking_observations or last observed_at older than 3h, outside a booked ferry window"
+    backtest: {hits: 4, on_case_orders: [CD-420322], on_quiet_orders: [CD-420735, CD-421013, CD-420806]}
+    route: {agent_task: ASK_DRIVER, then: P6}
+  - id: M9
+    name: coarse_eta_after_promise
+    rule: "latest tracking estimated_delivery_at > promise end"
+    backtest: {hits: 1, on_quiet_orders: [CD-420439], verdict: "noise: COARSE ETA oscillates 10:09-13:43 on a promise 5 days out"}
+    route: {alert: none, used_as: context_in_P2_P11}
+  - id: M10
+    name: ferry_sold_out_vs_promise
+    rule: "FERRY travel_option SOLD_OUT and earliest AVAILABLE_QUOTE arrival + road buffer compared with promise end"
+    backtest: {hits: 3, slack_hours: {CD-420299: 42, CD-420154: 20, CD-420360: 73}}
+    route: {P1: "if slack < 48h or quote needs purchase", record_only: "if slack >= 48h and no purchase due (CD-420360)"}
+  - id: M11
+    name: live_offer_site_unverified
+    rule: "market_offers status=PUBLISHED while pickup endpoint access_status=NEEDS_VERIFICATION stated_by=SITE_CONTACT"
+    backtest: {hits: 1, on_case_orders: [CD-420347]}
+    route: {person_card: P8}
+  - id: M12
+    name: pickup_48h_unconfirmed
+    rule: "pickup slot within 48h and pickup endpoint contact or access not CONFIRMED"
+    backtest: {hits: 12, on_case_orders: 5, on_quiet_orders: 7}
+    route: {agent_task: ASK_SITE, person_card: never_alone, note: "README: missing contacts alone are not an incident"}
+
+llm_inbound_classifier:
+  input: "every external message (conversations.messages, support_inbox_messages); languages seen: en, de, fr, fi"
+  output: [trigger_ids (multi-label), quoted_span, speaker_role, claim_type (REPORT|REQUEST|INSTRUCTION|CORRECTION), urgency_hint]
+  must_detect:
+    - {what: correction of an earlier statement, example: "CD-420437 msg-x0049fe6fc2fd0b0e"}
+    - {what: conditional instruction, example: "CD-420154 msg-xc9c0de8086ad8c68"}
+    - {what: authority claim by non-customer, example: "CD-420014 msg-xb09148d229b5d279"}
+    - {what: driver's own deadline, example: "CD-420593 msg-xdfc0efc421f38068 'another 30 minutes'"}
+
+routing:   # trigger -> playbook(s); multiple playbooks may run in parallel and merge into one card
+  crossing_sold_out: P1
+  booking_attempt_failed: P1
+  crossing_at_risk: P2
+  gate_check_in_rejected: P3
+  driver_unavailable: P4
+  driver_positioning_infeasible: P4
+  driver_missed_connection: P4
+  slot_started_not_started: P4
+  driver_chain_conflict: P4
+  vehicle_warning: P5
+  breakdown_or_accident: P5
+  charging_or_fuel_problem: P5
+  tracking_gap: P6
+  vehicle_not_at_pickup: P7
+  vin_mismatch: P7
+  keys_or_access_unclear: P8
+  release_document_or_hold: P8
+  car_not_ready: P8
+  intake_input_missing: P9
+  address_conflict: P9
+  receiver_unconfirmed_or_changed: P10
+  delivery_access_hours: P10
+  promise_breach: P11
+  proof_rejected_or_doc_missing: P12
+  condition_claim: P13
+  custody_question: P14
+  cancellation: P15
+  offer_unfilled_or_fee_request: P16
+  money_query: P17
+  info_request: P18
+  instruction_ambiguity: P18
+
+chain_calculator:   # deterministic, shared by all playbooks
+  input: {order: "orders.id", change: "one of new_sailing | new_pickup_slot | new_driver | new_delivery_time | cancellation"}
+  outputs:
+    promise:
+      fields: [original_window_utc, original_window_local, source, commitment_deadline_at, new_eta_basis, slack_hours, verdict]
+      verdict_values: [holds, early_arrival_custody_needed, breaks]
+      sources: ["time_windows purpose=CUSTOMER_DELIVERY_PROMISE", "travel_options.arrival_at + capacity_note road time", "terminal_road_estimates (planning range only)"]
+    driver_chain:
+      fields: [duties_ordered, previous_duty_end_city_time, next_duty_start_city_time, gap_hours, positioning_record_mismatch, next_duty_at_risk]
+      sources: ["work_assignments by driver_id (status ASSIGNED|IN_PROGRESS)", "transport_segments/points/addresses", "work_assignments.positioning"]
+    bookings:
+      fields: [existing_affected, first_departure_deadline, to_create (quote_id, quote_age_min), to_cancel, refundability]
+      sources: ["travel_reservations by assignment_id", "travel_options"]
+      refundability_default: unknown
+    cost:
+      fields: [quotes_total, hotel_nights (X), fee_delta, assumed_refunds]
+      assumed_refunds_default: 0
+    site:
+      fields: [opening_hours_on_day, release_document_rule, requires_signed_release, in_slot_release_only]
+      sources: ["sites", "order_endpoint_details"]
+    approvals: "union of action_classes triggered by the option"
+    notify: [driver, site, customer_draft, other_drivers_whose_duty_changes]
+
+card_schema:
+  header: [order_ref, car, customer_tier, triggers, decide_by, decide_by_reason]
+  what_happened: {max_lines: 3, each: [text, source_record, time_utc, time_local]}
+  agent_already_did: {each: [action_class, to_whom, at, answer, answer_at]}
+  facts: {each: [statement, evidence_level, source_record, time, age]}
+  options: {max: 3, each: [label, promise_delta, driver_chain_delta, bookings_plus_minus, cost, who_must_agree, reversible, approvals]}
+  recommendation: [option_id, one_line_reason]
+  buttons: [approve_option, edit, reject, ask_agent_to]
+  after_yes: [ordered_actions, prechecks (G8)]
+  agent_will_not: "list of guardrails blocking actions in this case"
+
+playbooks:
+
+  - id: P1
+    name: crossing_capacity
+    covers: [O1, O4, S2, S24]
+    observed_cases: [CD-420299, CD-420154, CD-420360]
+    detection:
+      deterministic:
+        - "travel_options kind=FERRY status=SOLD_OUT for the assignment's next crossing and no FERRY travel_reservation BOOKED"
+        - "agent_proposals command in (travel.book_ferry, travel.rebook) with execution.status=FAILED"
+      llm_cues: ["no ferry reference", "is the crossing booked", "sold out", "no vehicle space"]
+    facts:
+      - {id: P1.f1, type: D, blocking: true, what: "ferry booking state", source: "travel_reservations[assignment_id, kind=FERRY].status, check_in_cutoff_at, origin_terminal_id"}
+      - {id: P1.f2, type: D, blocking: true, what: "unreconciled purchase attempts (G9)", source: "agent_proposals[target_id=assignment].execution.status/error"}
+      - {id: P1.f3, type: X, blocking: true, what: "reconcile attempt with provider", tool: provider.lookup_booking, action_class: ASK_PROVIDER}
+      - {id: P1.f4, type: D, blocking: false, what: "quote list with age", source: "travel_options[kind=FERRY].departure_at, arrival_at, check_in_cutoff_at, quote_cents, checked_at"}
+      - {id: P1.f5, type: X, blocking: true, what: "fresh capacity for candidate sailings if quote age > 90 min, warn > 60 (G5)", tool: ferry.search_capacity, action_class: ASK_PROVIDER}
+      - {id: P1.f6, type: D, blocking: false, what: "need for overnight before cutoff", source: "time_windows SELECTED_PICKUP_SLOT, travel_options.road_time_to_terminal_hours | terminal_road_estimates"}
+      - {id: P1.f7, type: D, blocking: true, what: "promise slack per sailing", source: "chain_calculator.promise"}
+      - {id: P1.f8, type: D, blocking: false, what: "driver chain after arrival", source: "chain_calculator.driver_chain"}
+      - {id: P1.f9, type: L, blocking: false, what: "driver and customer constraints", source: "messages on order (rest, overnight conditions, approval stance)"}
+      - {id: P1.f10, type: D, blocking: false, what: "delivery receiver status", source: "order_endpoint_details[boundary=DELIVERY].contact_status, access_status"}
+      - {id: P1.f11, type: X, blocking: false, what: "hotel near origin terminal; custody plan if early arrival", tool: hotel.search}
+    options:
+      - id: A
+        label: "cheapest sailing that keeps the promise"
+        prepare:
+          - {type: D, what: "filter sailings with promise verdict holds|early_arrival"}
+          - {type: X, what: "re-quote chosen sailing and hotel"}
+          - {type: L, what: "draft informational customer note + receiver confirmation request"}
+        chain_effects: {promise: "unchanged; custody plan if arrival > 24h before promise start", driver_chain: "hotel night(s); return travel", bookings: "+ferry +hotel", cost: "quote + hotel nights", who_must_agree: [ops (purchase)]}
+        action_classes: [BOOK_TRAVEL, CUSTOMER_MESSAGE]
+      - id: B
+        label: "sailing that breaks the promise"
+        prepare:
+          - {type: D, what: "calculator verdict breaks; minimal lateness"}
+          - {type: L, what: "draft customer approval request (P11)"}
+        chain_effects: {promise: "breaks -> P11", bookings: "+ferry +hotel", who_must_agree: [ops, customer]}
+        action_classes: [BOOK_TRAVEL, CHANGE_WINDOW, CUSTOMER_MESSAGE]
+      - id: C
+        label: "reconciliation shows the earlier attempt succeeded"
+        prepare:
+          - {type: D, what: "attach reservation; verify vehicle space flag"}
+        chain_effects: {promise: unchanged, bookings: "none new", cost: "as booked"}
+        action_classes: [RECORD_ASSERTION]
+    gate: [G2, G3, G5, G6, G8, G9]
+    stop_conditions: ["purchases locked until P1.f3 answered (G9)", "quote older than 90 min at execution -> re-check (G5/G8)"]
+    escalate_when: ["no sailing keeps promise", "provider cannot confirm attempt outcome within 30 min"]
+    card: {decide_by: "next sailing cutoff minus driver road time, or reconciliation result", headline: "Crossing sold out: book <sailing>; promise <holds|breaks>"}
+
+  - id: P2
+    name: crossing_at_risk
+    covers: [O2]
+    observed_cases: [CD-420603, CD-420075, CD-420324, CD-420439]
+    detection:
+      deterministic: ["monitor M1"]
+      llm_cues: ["queue", "may close before I reach check-in", "running late to the terminal"]
+    facts:
+      - {id: P2.f1, type: D, blocking: true, what: "booking, cutoff, departure, terminal", source: "travel_reservations"}
+      - {id: P2.f2, type: L, blocking: true, what: "driver's own gate ETA (report, not a fix)", action_class: ASK_DRIVER}
+      - {id: P2.f3, type: D, blocking: false, what: "latest tracking with age (context only; no terminal ETA conversion per terminal_road_estimates.note)", source: tracking_observations}
+      - {id: P2.f4, type: X, blocking: false, what: "carrier rollover terms and next sailing capacity", tool: ferry.rollover_terms, action_class: ASK_PROVIDER}
+      - {id: P2.f5, type: D, blocking: false, what: "promise impact if rolled", source: chain_calculator.promise}
+    options:
+      - id: A
+        label: "wait for gate result (default)"
+        prepare: [{type: D, what: "set stop time = cutoff"}]
+        chain_effects: {promise: unchanged, bookings: none}
+        action_classes: [READ]
+      - id: B
+        label: "pre-arrange rollover with carrier"
+        prepare: [{type: X, what: "request amendment, unconfirmed (CD-420603 evt-x37f77d400ce2de16)"}]
+        chain_effects: {bookings: "amendment request only; original stays active (G7)", cost: "fee if any -> approval"}
+        action_classes: [ASK_PROVIDER, BOOK_TRAVEL]
+      - id: C
+        label: "if missed: rebook + promise check"
+        prepare: [{type: D, what: "hand off to P3/P1 and P11"}]
+        chain_effects: {promise: "per calculator", bookings: "+replacement"}
+        action_classes: [BOOK_TRAVEL, CUSTOMER_MESSAGE]
+    gate: [G2, G6, G7]
+    stop_conditions: ["ferry_terminal_events for reservation", "cutoff passes"]
+    escalate_when: ["driver gate ETA after cutoff", "no driver reply 60 min before cutoff"]
+    card: {decide_by: "cutoff", headline: "Crossing at risk: no decision until <cutoff>; fallback prepared"}
+
+  - id: P3
+    name: gate_rejected
+    covers: [O3, S19]
+    observed_cases: [CD-420194, CD-420342]
+    detection:
+      deterministic: ["ferry_terminal_events kind=CHECK_IN_REJECTED", "operational_events travel.check_in_rejected | travel.gate_exception_recorded"]
+      llm_cues: ["gate refused", "manifest", "registration does not match"]
+    facts:
+      - {id: P3.f1, type: D, blocking: true, what: "rejection reason", source: "ferry_terminal_events.reason"}
+      - {id: P3.f2, type: L, blocking: false, what: "classify free-text reason (manifest | after_cutoff | documents)"}
+      - {id: P3.f3, type: D, blocking: false, what: "promise and slack", source: chain_calculator.promise}
+    options:
+      - id: A
+        label: "manifest/registration correction"
+        prepare: [{type: X, what: "ask carrier to correct manifest"}, {type: D, what: "INSTRUCT_HOLD driver at gate"}]
+        chain_effects: {bookings: unchanged, promise: unchanged}
+        action_classes: [ASK_PROVIDER, INSTRUCT_HOLD]
+      - id: B
+        label: "after cutoff: rebook verified replacement"
+        prepare: [{type: X, what: "fresh capacity check (G5)"}, {type: D, what: "calculator for each candidate"}]
+        chain_effects: {bookings: "+replacement; old stays MISSED_CHECK_IN", cost: "+fare, refund unknown", promise: "per calculator"}
+        action_classes: [BOOK_TRAVEL]
+    gate: [G2, G5, G8]
+    stop_conditions: ["CHECK_IN_ACCEPTED event", "replacement BOOKED"]
+    escalate_when: ["no replacement keeps promise"]
+    card: {decide_by: "next sailing cutoff", headline: "Gate rejected <reason>: <fix>"}
+
+  - id: P4
+    name: driver_cannot_make_pickup
+    covers: [O5, O6, O7, S1, S11, S21]
+    observed_cases: [CD-420449, CD-420399, CD-420702, CD-420089, CD-420992]
+    detection:
+      deterministic: ["monitor M2", "monitor M3", "monitor M4 (gap < 24h or cross-border)", "work_assignments.positioning.assessment = DRIVER_REPORTED_UNWORKABLE"]
+      llm_cues: ["unwell", "need my rest", "cannot reach", "missed the train", "won't make the slot"]
+    facts:
+      - {id: P4.f1, type: D, blocking: true, what: "assignment, slot local+UTC, site release rules", source: "time_windows, sites.opening_hours, sites.pickup_access_note"}
+      - {id: P4.f2, type: D, blocking: true, what: "driver's full duty chain; flag positioning-record mismatch", source: chain_calculator.driver_chain}
+      - {id: P4.f3, type: D, blocking: true, what: "paid positioning; first departure = decide_by", source: "travel_reservations[assignment_id]"}
+      - {id: P4.f4, type: L, blocking: true, what: "definitive driver answer by deadline; earliest availability; location (REPORTED)", action_class: ASK_DRIVER}
+      - {id: P4.f5, type: X, blocking: false, what: "backup candidates (directed offer shortlist / reach check)", tool: driver_market.shortlist}
+      - {id: P4.f6, type: X, blocking: false, what: "rail/flight times for alternative slot", tool: rail.search}
+      - {id: P4.f7, type: D, blocking: false, what: "alternative slot vs site hours and promise", source: chain_calculator}
+      - {id: P4.f8, type: L, blocking: false, what: "constraints and confidentiality in messages"}
+    options:
+      - id: A
+        label: "keep driver (confirms by deadline)"
+        prepare: [{type: D, what: "no change"}]
+        chain_effects: {promise: unchanged, bookings: unchanged}
+        action_classes: [READ]
+      - id: B
+        label: "backup driver via directed offer"
+        prepare: [{type: X, what: "directed offer draft with fee"}, {type: D, what: "list bookings to cancel/change"}]
+        chain_effects: {driver_chain: "current kept until backup accepts (G7)", bookings: "-positioning (refund unknown) +new positioning", cost: "fee delta + sunk travel", who_must_agree: [ops]}
+        action_classes: [MARKET, CHANGE_ASSIGNMENT, CANCEL_TRAVEL, BOOK_TRAVEL]
+      - id: C
+        label: "move pickup slot"
+        prepare: [{type: D, what: "ASK_SITE availability (free)"}, {type: D, what: "calculator promise check"}, {type: L, what: "customer approval draft"}]
+        chain_effects: {promise: "per calculator", who_must_agree: [site, customer, ops]}
+        action_classes: [ASK_SITE, CHANGE_WINDOW, CUSTOMER_MESSAGE]
+      - id: D
+        label: "buy positioning from true previous-duty city"
+        prepare: [{type: X, what: "rail/flight quotes"}, {type: D, what: "start city from chain, not positioning record"}]
+        chain_effects: {bookings: "+positioning", cost: "+fare"}
+        action_classes: [BOOK_TRAVEL]
+    gate: [G2, G3, G4, G7, G8]
+    stop_conditions: ["driver confirms fit", "backup accepted", "deadline passes -> escalate"]
+    escalate_when: ["no driver answer by decide_by", "no backup and slot move breaks promise"]
+    card: {decide_by: "first paid departure or slot start", headline: "Driver may not make <slot>: decide by <time>"}
+
+  - id: P5
+    name: vehicle_warning_breakdown_accident
+    covers: [O8, S8, S9, S10]
+    observed_cases: [CD-420322]
+    detection:
+      deterministic: ["context only: monitor M8 (stale tracking), APP_PROGRESS_PLATEAU observations"]
+      llm_cues: ["warning light", "car feels different", "noise", "smoke", "accident", "will not charge", "wrong fuel"]
+    facts:
+      - {id: P5.f1, type: L, blocking: true, what: "fixed safety template: safe? exact location? photo? engine off? do not drive", action_class: ASK_DRIVER, forbidden: "mechanical or driving advice (G4)"}
+      - {id: P5.f2, type: D, blocking: true, what: "car, owner/customer, tier, promise, delivery site hours, driver's next duty", source: "vehicles, orders, customers, time_windows, sites, chain_calculator.driver_chain"}
+      - {id: P5.f3, type: L, blocking: false, what: "parse driver replies; location stays REPORTED"}
+      - {id: P5.f4, type: X, blocking: false, what: "roadside/tow candidates near reported location (info only)", tool: roadside.search}
+    options:
+      - id: A
+        label: "owner's own roadside/service"
+        prepare: [{type: L, what: "call script for owner (human calls)"}]
+        chain_effects: {promise: "breaks -> P11", driver_chain: "waiting time, return travel", cost: "owner-paid"}
+        action_classes: [CUSTOMER_MESSAGE]
+      - id: B
+        label: "Bahn arranges tow"
+        prepare: [{type: X, what: "tow quote"}]
+        chain_effects: {promise: "breaks -> P11", cost: "+tow", custody: "car to workshop; keys handover evidence"}
+        action_classes: [BOOK_TRAVEL, CUSTOMER_MESSAGE]
+      - id: C
+        label: "wait for diagnosis"
+        prepare: [{type: D, what: "set recheck time"}]
+        chain_effects: {promise: "at risk", driver_chain: "hotel if > 4h"}
+        action_classes: [INSTRUCT_HOLD]
+    gate: [G1, G2, G4]
+    stop_conditions: ["owner decision recorded", "recovery booked"]
+    escalate_when: ["immediately: critical safety class always gets a person card"]
+    card: {decide_by: "now (safety)", headline: "Car stopped, driver safe: call owner (roadside vs tow); delivery will be late"}
+
+  - id: P6
+    name: signal_gap
+    covers: [O9]
+    observed_cases: [CD-420322, CD-420020, CD-420735, CD-421013, CD-420806]
+    detection:
+      deterministic: ["monitor M8"]
+      llm_cues: []
+    facts:
+      - {id: P6.f1, type: D, blocking: true, what: "last observation, upload lag, inside booked ferry window?", source: "tracking_observations, travel_reservations"}
+      - {id: P6.f2, type: L, blocking: false, what: "all OK? next ETA?", action_class: ASK_DRIVER}
+    options:
+      - id: A
+        label: "resolve gap on fresh observation only"
+        prepare: [{type: D, what: "resolution_evidence = new observation id; no other field upgraded (G3)"}]
+        chain_effects: {none: true}
+        action_classes: [RECORD_ASSERTION]
+    gate: [G3]
+    stop_conditions: ["fresh observation", "driver reply"]
+    escalate_when: ["no reply in 60 min AND promise or cutoff within 6h"]
+    card: {decide_by: "n/a unless escalated", headline: "No position since <t>; driver asked at <t>"}
+
+  - id: P7
+    name: vehicle_not_at_pickup
+    covers: [O10, S6]
+    observed_cases: [CD-420593, CD-420201]
+    detection:
+      deterministic: ["operational_events pickup.attempted / site_visits.outcome = VEHICLE_NOT_FOUND"]
+      llm_cues: ["cannot find the car", "not in the handover list", "different VIN", "similar car"]
+    facts:
+      - {id: P7.f1, type: D, blocking: true, what: "INSTRUCT_HOLD: take no car or keys", action_class: INSTRUCT_HOLD}
+      - {id: P7.f2, type: L, blocking: true, what: "site checks VIN against release list/yard", action_class: ASK_SITE}
+      - {id: P7.f3, type: D, blocking: false, what: "order VIN/plate; other open orders at same site", source: "vehicles, orders.pickup_site_id"}
+      - {id: P7.f4, type: L, blocking: true, what: "driver wait limit from their own message", source: messages}
+      - {id: P7.f5, type: D, blocking: false, what: "driver's next duty; promise slack", source: chain_calculator}
+      - {id: P7.f6, type: X, blocking: false, what: "driver return travel options", tool: rail.search}
+      - {id: P7.f7, type: L, blocking: false, what: "draft customer question: which site holds VIN", action_class: CUSTOMER_MESSAGE}
+    options:
+      - id: A
+        label: "wait until driver's limit"
+        prepare: [{type: D, what: "timer"}]
+        chain_effects: {cost: "driver waiting time"}
+        action_classes: [INSTRUCT_HOLD]
+      - id: B
+        label: "release driver now, reschedule when located"
+        prepare: [{type: D, what: "payout precedent lookup (CD-420201 PAYOUT_DUE)"}, {type: X, what: "return travel quote"}]
+        chain_effects: {driver_chain: "freed", cost: "payout decision + travel", promise: "per slack"}
+        action_classes: [CHANGE_ASSIGNMENT, MONEY]
+      - id: C
+        label: "redirect to verified location"
+        prepare: [{type: L, what: "customer authority draft"}, {type: D, what: "new slot calc"}]
+        chain_effects: {who_must_agree: [customer, site], promise: "per calculator"}
+        action_classes: [CHANGE_WINDOW, INSTRUCT_CHANGE, CUSTOMER_MESSAGE]
+      - id: D
+        label: "cancel (customer decision) -> P15"
+        prepare: [{type: D, what: "P15"}]
+        chain_effects: {bookings: "cancel", cost: "payout + expenses"}
+        action_classes: [CHANGE_ASSIGNMENT]
+    gate: [G1, G2, G4, G11]
+    stop_conditions: ["site confirms VIN", "customer decision"]
+    escalate_when: ["driver limit reached"]
+    card: {decide_by: "driver's stated wait limit", headline: "Car not at <site>: release driver or wait?"}
+
+  - id: P8
+    name: release_blocked
+    covers: [O11, O12, S3, S4, S5, S7]
+    observed_cases: [CD-420516, CD-420347, CD-420458, CD-420015, CD-420656, CD-420689, CD-420941]
+    detection:
+      deterministic: ["order_endpoint_details access_status=NEEDS_VERIFICATION stated_by=SITE_CONTACT", "documents kind=RELEASE_AUTHORITY status=MISSING at site requires_signed_release", "monitor M11"]
+      llm_cues: ["keys", "side gate", "handover sheet names", "signed release", "hold", "not ready", "waiting for a part", "do not send a driver"]
+    facts:
+      - {id: P8.f1, type: L, blocking: true, what: "order-specific site check within 1h of trigger (car present, key holder, release document, holds)", action_class: ASK_SITE}
+      - {id: P8.f2, type: D, blocking: true, what: "live offers, assignments, travel booked for this pickup", source: "market_offers, work_assignments, travel_reservations"}
+      - {id: P8.f3, type: D, blocking: false, what: "release documents and site rules", source: "documents, sites.release_document_rule, requires_signed_release"}
+      - {id: P8.f4, type: L, blocking: true, what: "classify site reply: clear | conditional | blocked; callback time"}
+    options:
+      - id: A
+        label: "pause/withdraw live offer"
+        prepare: [{type: D, what: "offer id, exposure"}]
+        chain_effects: {bookings: "no driver can book", promise: "at risk if long"}
+        action_classes: [MARKET]
+      - id: B
+        label: "keep slot pending callback"
+        prepare: [{type: D, what: "stop time = callback time"}]
+        chain_effects: {promise: unchanged}
+        action_classes: [READ]
+      - id: C
+        label: "move slot"
+        prepare: [{type: D, what: "calculator"}, {type: L, what: "customer approval draft"}]
+        chain_effects: {who_must_agree: [site, customer, driver], promise: "per calculator"}
+        action_classes: [CHANGE_WINDOW, CUSTOMER_MESSAGE, INSTRUCT_CHANGE]
+      - id: D
+        label: "customer clears hold / sends document"
+        prepare: [{type: L, what: "draft"}]
+        chain_effects: {promise: "depends on timing"}
+        action_classes: [CUSTOMER_MESSAGE]
+    gate: [G1, G2]
+    stop_conditions: ["site confirms release", "callback time passes -> re-ask site"]
+    escalate_when: ["site says do not send a driver while offer/assignment active", "slot within 24h and still blocked"]
+    card: {decide_by: "slot start minus driver travel", headline: "Release blocked: <reason>; pause offer?"}
+
+  - id: P9
+    name: intake_input_missing
+    covers: [O13, S13]
+    observed_cases: [CD-420009, CD-420010, CD-420023]
+    detection:
+      deterministic: ["operational_events order.readiness_assessed decision_code in (IDENTITY_INPUT_REQUIRED, PICKUP_CONTACT_HANDLE_REQUIRED, PICKUP_ACCESS_CHECK_REQUIRED)"]
+      llm_cues: ["address says X but notes say Y"]
+    facts:
+      - {id: P9.f1, type: D, blocking: true, what: "missing input", source: "vehicles.synthetic_vin/registration, order_endpoint_details.contact_handle, addresses.address_line1"}
+      - {id: P9.f2, type: D, blocking: false, what: "existing customer thread", source: conversations}
+      - {id: P9.f3, type: L, blocking: false, what: "draft question", action_class: CUSTOMER_MESSAGE}
+    options:
+      - id: A
+        label: "ask customer; no offer until resolved"
+        prepare: [{type: L, what: "draft"}]
+        chain_effects: {promise: "unchanged until slot selection"}
+        action_classes: [CUSTOMER_MESSAGE]
+    gate: [G1, G2]
+    stop_conditions: ["input supplied"]
+    escalate_when: ["pickup availability within 72h"]
+    card: {decide_by: "work_item.due_at", headline: "Missing <input>: send draft?"}
+
+  - id: P10
+    name: receiver_or_delivery_access
+    covers: [O14, S12, S14]
+    observed_cases: [CD-420437, CD-420014]
+    detection:
+      deterministic: ["delivery endpoint contact_status UNCONFIRMED within 24h of promise", "chain_calculator ETA outside access hours"]
+      llm_cues: ["receiving contact available only until", "who can sign", "not available to take the delivery"]
+    facts:
+      - {id: P10.f1, type: D, blocking: true, what: "endpoint status and claims with sources", source: "order_endpoint_details, endpoint_claims"}
+      - {id: P10.f2, type: D, blocking: false, what: "ETA (COARSE) vs access window vs promise", source: "tracking_observations, time_windows, sites"}
+      - {id: P10.f3, type: L, blocking: false, what: "detect corrections and authority claims in messages"}
+    options:
+      - id: A
+        label: "customer names authorised receiver"
+        prepare: [{type: L, what: "draft"}]
+        chain_effects: {promise: unchanged}
+        action_classes: [CUSTOMER_MESSAGE]
+      - id: B
+        label: "driver keeps car and keys until named receiver"
+        prepare: [{type: D, what: "instruction template"}]
+        chain_effects: {custody: "driver holds"}
+        action_classes: [INSTRUCT_HOLD]
+      - id: C
+        label: "new delivery time -> P11"
+        prepare: [{type: D, what: "P11"}]
+        chain_effects: {promise: "breaks -> approval"}
+        action_classes: [CHANGE_WINDOW, CUSTOMER_MESSAGE]
+    gate: [G1, G3, G6]
+    stop_conditions: ["endpoint.instruction_verified"]
+    escalate_when: ["ETA within 4h and receiver unconfirmed"]
+    card: {decide_by: "ETA minus 2h", headline: "No authorised receiver yet for <time>"}
+
+  - id: P11
+    name: promise_revision
+    covers: [O15]
+    observed_cases: [CD-420702, CD-420675, CD-420322]
+    detection:
+      deterministic: ["chain_calculator.promise.verdict = breaks", "selected pickup/yard window end after promise end (CD-420702 alert-x9cd05869f6be7f09)"]
+      llm_cues: ["will miss the slot", "after the receiving window"]
+    facts:
+      - {id: P11.f1, type: D, blocking: true, what: "original promise record (kept)", source: time_windows}
+      - {id: P11.f2, type: D, blocking: true, what: "new ETA basis and earliest feasible window", source: chain_calculator}
+      - {id: P11.f3, type: L, blocking: false, what: "draft reason + proposed window + receiver question", action_class: CUSTOMER_MESSAGE}
+    options:
+      - id: A
+        label: "request customer approval of new window"
+        prepare: [{type: L, what: "draft"}]
+        chain_effects: {promise: "revised only after customer approval; both retained"}
+        action_classes: [CUSTOMER_MESSAGE, CHANGE_WINDOW]
+    gate: [G1, G6]
+    stop_conditions: ["delivery.promise_revised with customer_approved=true"]
+    escalate_when: ["original promise start within 4h"]
+    card: {decide_by: "original promise start", headline: "Delivery will miss <window>: send approval request?"}
+
+  - id: P12
+    name: evidence_defect
+    covers: [O16, S17]
+    observed_cases: [CD-420071, CD-420612, CD-420164, CD-420020]
+    detection:
+      deterministic: ["proofs status=REJECTED", "monitor M5a", "monitor M5b (queue only)"]
+      llm_cues: ["signed delivery proof", "handover file", "accounting needs"]
+    facts:
+      - {id: P12.f1, type: D, blocking: true, what: "proof/document states and review notes", source: "proofs, documents"}
+      - {id: P12.f2, type: D, blocking: false, what: "site signature rule", source: "sites.requires_signed_release"}
+      - {id: P12.f3, type: L, blocking: false, what: "driver/site statements about identity vs condition"}
+    options:
+      - id: A
+        label: "driver retake as current condition (never backdated)"
+        prepare: [{type: L, what: "driver request"}]
+        chain_effects: {none: true}
+        action_classes: [ASK_DRIVER]
+      - id: B
+        label: "signed-document follow-up with receiver/customer"
+        prepare: [{type: L, what: "draft"}]
+        chain_effects: {none: true}
+        action_classes: [CUSTOMER_MESSAGE]
+    gate: [G1, G3]
+    stop_conditions: ["document SIGNED/VERIFIED", "proof APPROVED"]
+    escalate_when: ["customer asked twice", "work item overdue"]
+    card: {decide_by: "work_item.due_at", headline: "Missing <document>; customer asked <n> times"}
+
+  - id: P13
+    name: condition_claim
+    covers: [O17]
+    observed_cases: [CD-420055, CD-420455]
+    detection:
+      deterministic: []
+      llm_cues: ["mark", "scratch", "damage", "was it there at collection"]
+    facts:
+      - {id: P13.f1, type: D, blocking: true, what: "preserve originals; list proofs with review state; flag unreviewed pickup photos", source: "proofs, attachments/manifest.json"}
+      - {id: P13.f2, type: L, blocking: false, what: "driver recollection", action_class: ASK_DRIVER}
+      - {id: P13.f3, type: L, blocking: false, what: "customer photo timing and location of mark"}
+      - {id: P13.f4, type: H, blocking: false, what: "visual comparison of pickup/delivery/customer photos"}
+    options:
+      - id: A
+        label: "evidence summary for human; no attribution"
+        prepare: [{type: L, what: "summary with what can and cannot be established"}]
+        chain_effects: {none: true}
+        action_classes: [READ]
+    gate: [G1, G3, G4]
+    stop_conditions: ["human decision recorded"]
+    escalate_when: ["always (person card)"]
+    card: {decide_by: "n/a", headline: "Reported mark on <car>: evidence comparison ready; attribution is yours"}
+
+  - id: P14
+    name: custody_question
+    covers: [O18, S16, S23]
+    observed_cases: [CD-420004, CD-420335, CD-420342, CD-420324, CD-420384]
+    detection:
+      deterministic: ["custody_assets status not verified with followup_due_at"]
+      llm_cues: ["keep the key", "overnight", "collect the second car early"]
+    facts:
+      - {id: P14.f1, type: D, blocking: true, what: "who holds car/keys per records", source: "custody_reports, custody_assets"}
+      - {id: P14.f2, type: L, blocking: false, what: "ask location and resume ETA", action_class: ASK_DRIVER}
+    options:
+      - id: A
+        label: "driver keeps car and keys"
+        prepare: [{type: D, what: "template reply"}]
+        chain_effects: {custody: driver}
+        action_classes: [INSTRUCT_HOLD]
+      - id: B
+        label: "third-party custody with owner approval"
+        prepare: [{type: L, what: "draft to owner"}]
+        chain_effects: {custody: third_party}
+        action_classes: [CUSTOMER_MESSAGE]
+    gate: [G1, G10]
+    stop_conditions: ["driver acknowledged"]
+    escalate_when: ["third-party custody requested"]
+    card: {decide_by: "n/a", headline: "Custody question answered by rule"}
+
+  - id: P15
+    name: cancellation
+    covers: [O19, S20]
+    observed_cases: [CD-420419, CD-420201]
+    detection:
+      deterministic: ["operational_events support.request_received reason_code CUSTOMER_SALE_WITHDRAWN"]
+      llm_cues: ["cancel", "stop the collection", "sale withdrawn"]
+    facts:
+      - {id: P15.f1, type: D, blocking: true, what: "assignment, travel bookings, driver already travelling?", source: "work_assignments, travel_reservations, site_visits"}
+      - {id: P15.f2, type: L, blocking: true, what: "explicit customer confirmation", source: messages}
+    options:
+      - id: A
+        label: "cancel order, assignment, plan; tell driver; payout and cost review"
+        prepare: [{type: D, what: "ordered command list"}, {type: H, what: "payout decision"}]
+        chain_effects: {bookings: "cancel travel", cost: "payout + expenses"}
+        action_classes: [CHANGE_ASSIGNMENT, CANCEL_TRAVEL, MONEY]
+    gate: [G1, G2]
+    stop_conditions: ["order.cancellation_cost_reviewed"]
+    escalate_when: ["car already in transit (S20)"]
+    card: {decide_by: "driver departure", headline: "Customer cancels: confirm and stop driver"}
+
+  - id: P16
+    name: offer_unfilled
+    covers: [O20, S18]
+    observed_cases: [CD-420404]
+    detection:
+      deterministic: ["offer booking cutoff passed while PUBLISHED", "pickup within 48h and no assignment"]
+      llm_cues: ["I could take it if the fee were"]
+    facts:
+      - {id: P16.f1, type: D, blocking: true, what: "offer age, cutoff, views/passes, reach checks", source: "market_offers, market_offer_demand_signals, market_offer_reach_checks"}
+      - {id: P16.f2, type: L, blocking: false, what: "driver fee requests (not acceptance)"}
+    options:
+      - id: A
+        label: "reprice and repost"
+        prepare: [{type: D, what: "previous fees"}]
+        chain_effects: {cost: "+fee"}
+        action_classes: [MARKET]
+      - id: B
+        label: "directed offer"
+        prepare: [{type: X, what: "shortlist"}]
+        chain_effects: {cost: "fee"}
+        action_classes: [MARKET]
+    gate: [G2]
+    stop_conditions: ["assignment.booked"]
+    escalate_when: ["pickup within 24h unassigned"]
+    card: {decide_by: "booking cutoff", headline: "No driver yet for <slot>: reprice?"}
+
+  - id: P17
+    name: money_query
+    covers: [O21, S15]
+    observed_cases: [CD-420194, CD-420326, CD-420291, CD-420201]
+    detection:
+      deterministic: []
+      llm_cues: ["invoice", "reimbursed", "paid twice", "purchase-order reference"]
+    facts:
+      - {id: P17.f1, type: D, blocking: true, what: "expense status, supersession, payer, reservation link", source: expenses}
+      - {id: P17.f2, type: X, blocking: false, what: "billing/payout ledger (not in packet)", tool: billing.lookup}
+    options:
+      - id: A
+        label: "factual answer + route to expenses/billing"
+        prepare: [{type: L, what: "answer draft without 'paid'/'issued' unless recorded"}]
+        chain_effects: {none: true}
+        action_classes: [CUSTOMER_MESSAGE, ASK_DRIVER]
+    gate: [G1, G3]
+    stop_conditions: ["answer sent"]
+    escalate_when: ["dispute"]
+    card: {decide_by: "n/a", headline: "Money query: draft answer ready"}
+
+  - id: P18
+    name: info_request_or_instruction_ambiguity
+    covers: [O22, O23]
+    observed_cases: [CD-420111, CD-420118, CD-420537, CD-420585, CD-420240, CD-420442, CD-420806, CD-421010, CD-420123, CD-420222, CD-420089]
+    detection:
+      deterministic: []
+      llm_cues: ["when will", "is a driver confirmed", "which one do I follow", "can they treat that as signed"]
+    facts:
+      - {id: P18.f1, type: D, blocking: true, what: "answer from records with claim discipline (window != ETA; booked != picked up; prepared != signed)", source: "time_windows, work_assignments, documents"}
+      - {id: P18.f2, type: D, blocking: false, what: "for drivers: list own duties with local times", source: chain_calculator.driver_chain}
+      - {id: P18.f3, type: L, blocking: false, what: "draft reply in the sender's language"}
+    options:
+      - id: A
+        label: "reply"
+        prepare: [{type: L, what: "draft"}]
+        chain_effects: {none: true}
+        action_classes: [CUSTOMER_MESSAGE, ASK_DRIVER]
+    gate: [G1, G3]
+    stop_conditions: ["reply sent"]
+    escalate_when: ["never alone"]
+    card: {decide_by: "n/a", headline: "Draft reply (approve to send)"}

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Local dev stack: Supabase (db :55322, studio :55323) + Next.js (:3001); Ctrl+C or any crash tears it all down.
+# Local dev stack: Supabase (db :55322, studio :55323) + Next.js (:3001) + Trigger.dev dev worker; Ctrl+C or any crash tears it all down.
 
 set -uo pipefail
 
@@ -62,12 +62,14 @@ supabase start || warn "supabase start returned non-zero (already running?) — 
 
 set -m
 run "next" "$c_grn" pnpm dev:local
+run "trigger" "$c_ylw" pnpm trigger:dev
 set +m
 disown -a 2>/dev/null || true
 
 printf '\n'
 say "${c_bold}${c_grn}Stack is up.${c_reset}  App: http://localhost:3001"
 say "Supabase Studio: http://localhost:55323"
+say "Trigger.dev runs: https://cloud.trigger.dev/projects/v3/${TRIGGER_PROJECT_REF:-<your project ref>}/runs?envSlug=dev"
 say "${c_dim}Press Ctrl+C to tear everything down.${c_reset}"
 printf '\n'
 

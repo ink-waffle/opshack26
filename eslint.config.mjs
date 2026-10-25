@@ -7,7 +7,14 @@ import simpleImportSort from 'eslint-plugin-simple-import-sort';
 export default defineConfig([
   ...nextVitals,
   ...nextTs,
-  globalIgnores(['.next/**', 'out/**', 'build/**', 'next-env.d.ts', 'lib/generated/**']),
+  globalIgnores([
+    '.next/**',
+    'out/**',
+    'build/**',
+    'next-env.d.ts',
+    'lib/generated/**',
+    '.trigger/**',
+  ]),
   {
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',

@@ -1,0 +1,16 @@
+{
+  "orderRef": "CD-420449",
+  "notes": "Driver drv-434 (Carl Birkelane, Aalborg) has been unwell since 20 Oct. Consistent with msg-x20e5c01f9996654c (08:03Z: still unsure). He does not refuse; he hedges and prefers not to start paid travel he might waste.",
+  "replies": [
+    {
+      "party": "driver",
+      "match": "afternoon|later slot|later time",
+      "reply": "An afternoon pickup would give me a better chance, but I still cannot promise it today."
+    },
+    {
+      "party": "driver",
+      "match": ".",
+      "reply": "Sorry, I am still not sure. I feel a bit better than yesterday, but I cannot promise I will be fit to drive tomorrow morning. If you have someone else for it, that is fine with me. I would rather not get on the 12:25 train if I might cancel later. An afternoon pickup would give me a better chance."
+    }
+  ]
+}

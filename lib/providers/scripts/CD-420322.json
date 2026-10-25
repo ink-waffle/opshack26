@@ -1,0 +1,16 @@
+{
+  "orderRef": "CD-420322",
+  "notes": "Driver drv-319 (Kasper Kovelund) with the Bentley Continental GT after the red warning (08:04Z). Consistent with msg-xc6eef673bb0bd1f0: safe at a service-area car park, engine off, photo possible, no diagnosis.",
+  "replies": [
+    {
+      "party": "driver",
+      "match": "safe|where|location|pin|photo|engine",
+      "reply": "Yes, I am safe, waiting inside the service-area building away from the traffic. I am at Raststätte Göttingen Ost on the A7 northbound, car park behind the fuel station. The engine is off and stays off. I am sending the photo of the red warning light in the app now. I have not touched anything on the car."
+    },
+    {
+      "party": "driver",
+      "match": ".",
+      "reply": "Understood. I will wait here with the car and the keys until you tell me who is coming."
+    }
+  ]
+}

@@ -1,26 +1,315 @@
 @import 'tailwindcss';
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+/* Bahn Control Room theme. Palette taken from bahnexpress.fi (--bx-color-*), light theme first. */
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+@theme {
+  /* Bahn neutrals: birch paper, asphalt ink, warm greys in between */
+  --color-birch: #fffef7;
+  --color-asphalt: #12110e;
+  --color-grey-50: #f1eee6;
+  --color-grey-100: #e2ded4;
+  --color-grey-200: #ccc6ba;
+  --color-grey-300: #b7afa0;
+  --color-grey-400: #a09786;
+  --color-grey-500: #8a7f6b;
+  --color-grey-600: #726958;
+  --color-grey-700: #5a5346;
+  --color-grey-800: #423d33;
+  --color-grey-900: #2a2721;
+  --color-grey-950: #1e1c17;
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+  /* Bahn brand hues; Tailwind's red/orange/green/teal are replaced so stray utilities stay on brand */
+  --color-red-50: #ffe8ec;
+  --color-red-100: #ffd1d7;
+  --color-red-200: #ffafba;
+  --color-red-300: #ff8e9d;
+  --color-red-400: #fe6c7f;
+  --color-red-500: #fd4a61;
+  --color-red-600: #d13f52;
+  --color-red-700: #a13342;
+  --color-red-800: #752832;
+  --color-red-900: #451c22;
+  --color-red-950: #31171b;
+  --color-orange-50: #ffece3;
+  --color-orange-100: #ffd9c9;
+  --color-orange-200: #ffbda3;
+  --color-orange-300: #ffa27e;
+  --color-orange-400: #fe8657;
+  --color-orange-500: #fd6a31;
+  --color-orange-600: #cf582a;
+  --color-orange-700: #a14623;
+  --color-orange-800: #75351c;
+  --color-orange-900: #472315;
+  --color-orange-950: #301a12;
+  --color-green-50: #daf4e9;
+  --color-green-100: #c1ead9;
+  --color-green-200: #9adbc0;
+  --color-green-300: #76cda9;
+  --color-green-400: #50be90;
+  --color-green-500: #29af77;
+  --color-green-600: #238f62;
+  --color-green-700: #1c704d;
+  --color-green-800: #165038;
+  --color-green-900: #0f3123;
+  --color-green-950: #0c2119;
+  --color-teal-50: #dcf4f7;
+  --color-teal-100: #c6eaef;
+  --color-teal-200: #a4dbe4;
+  --color-teal-300: #85cdd9;
+  --color-teal-400: #64becd;
+  --color-teal-500: #43afc1;
+  --color-teal-600: #378f9e;
+  --color-teal-700: #2c707b;
+  --color-teal-800: #205058;
+  --color-teal-900: #153135;
+  --color-teal-950: #0f2124;
+
+  /* Surfaces and text (use these first) */
+  --color-canvas: #f1eee6;
+  --color-surface: #fffef7;
+  --color-tray: #f8f6f0;
+  --color-sunken: #f1eee6;
+  --color-ink: #12110e;
+  --color-body: #2a2721;
+  --color-secondary: #423d33;
+  --color-muted: #726958;
+  --color-subtle: #8a7f6b;
+  --color-faint: #a09786;
+  --color-line: #e2ded4;
+  --color-line-soft: #ebe7de;
+  --color-line-strong: #ccc6ba;
+
+  /* Semantic tones: base (dots, bars), ink (text), soft (fill), line (border) */
+  --color-danger: #fd4a61;
+  --color-danger-ink: #a13342;
+  --color-danger-soft: #ffe8ec;
+  --color-danger-line: #ffc9d1;
+  --color-warn: #fd6a31;
+  --color-warn-ink: #a14623;
+  --color-warn-soft: #ffece3;
+  --color-warn-line: #ffd2bf;
+  --color-ok: #29af77;
+  --color-ok-ink: #1c704d;
+  --color-ok-soft: #daf4e9;
+  --color-ok-line: #b5e4cf;
+  --color-info: #43afc1;
+  --color-info-ink: #2c707b;
+  --color-info-soft: #dcf4f7;
+  --color-info-line: #b9e3ea;
+  --color-neutral: #8a7f6b;
+  --color-neutral-ink: #423d33;
+  --color-neutral-soft: #f1eee6;
+  --color-neutral-line: #e2ded4;
+
+  /* Evidence ladder, weakest to strongest; weak levels render hollow and dashed */
+  --color-ev-requested: #a09786;
+  --color-ev-stated: #8a7f6b;
+  --color-ev-quoted: #726958;
+  --color-ev-planned: #5a5346;
+  --color-ev-booked: #2c707b;
+  --color-ev-observed: #238f62;
+  --color-ev-verified: #1c704d;
+
+  /* Type scale tuned for a dense but calm ops screen; body is 14px */
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1.125rem;
+  --text-sm: 0.8125rem;
+  --text-sm--line-height: 1.25rem;
+  --text-base: 0.875rem;
+  --text-base--line-height: 1.375rem;
+  --text-md: 0.9375rem;
+  --text-md--line-height: 1.5rem;
+  --text-lg: 1.0625rem;
+  --text-lg--line-height: 1.5rem;
+  --text-xl: 1.25rem;
+  --text-xl--line-height: 1.75rem;
+  --text-2xl: 1.5rem;
+  --text-2xl--line-height: 1.875rem;
+  --text-3xl: 1.875rem;
+  --text-3xl--line-height: 2.25rem;
+  --text-4xl: 2.375rem;
+  --text-4xl--line-height: 2.625rem;
+
+  --radius-card: 1rem;
+  --radius-panel: 0.75rem;
+
+  --shadow-card: 0 0 0 1px var(--color-line), 0 1px 2px rgb(66 61 51 / 0.05);
+  --shadow-raised: 0 0 0 1px var(--color-line-strong), 0 10px 28px -12px rgb(66 61 51 / 0.22);
+  --shadow-pill: 0 0 0 1px rgb(18 17 14 / 0.05), 0 1px 2px rgb(18 17 14 / 0.08);
+  --shadow-tooltip: 0 6px 20px -6px rgb(18 17 14 / 0.35);
+
+  --animate-shimmer: shimmer 1.6s linear infinite;
+  --animate-pulse-soft: pulse-soft 2s ease-in-out infinite;
+
+  @keyframes shimmer {
+    from {
+      background-position: 200% 0;
+    }
+    to {
+      background-position: -200% 0;
+    }
+  }
+  @keyframes pulse-soft {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.45;
+    }
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* Map Tailwind's other grey families and near-hues onto Bahn's, so default utilities still look on brand */
+@theme {
+  --color-gray-50: var(--color-grey-50);
+  --color-gray-100: var(--color-grey-100);
+  --color-gray-200: var(--color-grey-200);
+  --color-gray-300: var(--color-grey-300);
+  --color-gray-400: var(--color-grey-400);
+  --color-gray-500: var(--color-grey-500);
+  --color-gray-600: var(--color-grey-600);
+  --color-gray-700: var(--color-grey-700);
+  --color-gray-800: var(--color-grey-800);
+  --color-gray-900: var(--color-grey-900);
+  --color-gray-950: var(--color-grey-950);
+  --color-zinc-50: var(--color-grey-50);
+  --color-zinc-100: var(--color-grey-100);
+  --color-zinc-200: var(--color-grey-200);
+  --color-zinc-300: var(--color-grey-300);
+  --color-zinc-400: var(--color-grey-400);
+  --color-zinc-500: var(--color-grey-500);
+  --color-zinc-600: var(--color-grey-600);
+  --color-zinc-700: var(--color-grey-700);
+  --color-zinc-800: var(--color-grey-800);
+  --color-zinc-900: var(--color-grey-900);
+  --color-zinc-950: var(--color-grey-950);
+  --color-stone-50: var(--color-grey-50);
+  --color-stone-100: var(--color-grey-100);
+  --color-stone-200: var(--color-grey-200);
+  --color-stone-300: var(--color-grey-300);
+  --color-stone-400: var(--color-grey-400);
+  --color-stone-500: var(--color-grey-500);
+  --color-stone-600: var(--color-grey-600);
+  --color-stone-700: var(--color-grey-700);
+  --color-stone-800: var(--color-grey-800);
+  --color-stone-900: var(--color-grey-900);
+  --color-stone-950: var(--color-grey-950);
+  --color-neutral-50: var(--color-grey-50);
+  --color-neutral-100: var(--color-grey-100);
+  --color-neutral-200: var(--color-grey-200);
+  --color-neutral-300: var(--color-grey-300);
+  --color-neutral-400: var(--color-grey-400);
+  --color-neutral-500: var(--color-grey-500);
+  --color-neutral-600: var(--color-grey-600);
+  --color-neutral-700: var(--color-grey-700);
+  --color-neutral-800: var(--color-grey-800);
+  --color-neutral-900: var(--color-grey-900);
+  --color-neutral-950: var(--color-grey-950);
+  --color-slate-50: var(--color-grey-50);
+  --color-slate-100: var(--color-grey-100);
+  --color-slate-200: var(--color-grey-200);
+  --color-slate-300: var(--color-grey-300);
+  --color-slate-400: var(--color-grey-400);
+  --color-slate-500: var(--color-grey-500);
+  --color-slate-600: var(--color-grey-600);
+  --color-slate-700: var(--color-grey-700);
+  --color-slate-800: var(--color-grey-800);
+  --color-slate-900: var(--color-grey-900);
+  --color-slate-950: var(--color-grey-950);
+  --color-amber-50: var(--color-orange-50);
+  --color-amber-100: var(--color-orange-100);
+  --color-amber-200: var(--color-orange-200);
+  --color-amber-300: var(--color-orange-300);
+  --color-amber-400: var(--color-orange-400);
+  --color-amber-500: var(--color-orange-500);
+  --color-amber-600: var(--color-orange-600);
+  --color-amber-700: var(--color-orange-700);
+  --color-amber-800: var(--color-orange-800);
+  --color-amber-900: var(--color-orange-900);
+  --color-amber-950: var(--color-orange-950);
+  --color-emerald-50: var(--color-green-50);
+  --color-emerald-100: var(--color-green-100);
+  --color-emerald-200: var(--color-green-200);
+  --color-emerald-300: var(--color-green-300);
+  --color-emerald-400: var(--color-green-400);
+  --color-emerald-500: var(--color-green-500);
+  --color-emerald-600: var(--color-green-600);
+  --color-emerald-700: var(--color-green-700);
+  --color-emerald-800: var(--color-green-800);
+  --color-emerald-900: var(--color-green-900);
+  --color-emerald-950: var(--color-green-950);
+  --color-sky-50: var(--color-teal-50);
+  --color-sky-100: var(--color-teal-100);
+  --color-sky-200: var(--color-teal-200);
+  --color-sky-300: var(--color-teal-300);
+  --color-sky-400: var(--color-teal-400);
+  --color-sky-500: var(--color-teal-500);
+  --color-sky-600: var(--color-teal-600);
+  --color-sky-700: var(--color-teal-700);
+  --color-sky-800: var(--color-teal-800);
+  --color-sky-900: var(--color-teal-900);
+  --color-sky-950: var(--color-teal-950);
+  --color-cyan-50: var(--color-teal-50);
+  --color-cyan-100: var(--color-teal-100);
+  --color-cyan-200: var(--color-teal-200);
+  --color-cyan-300: var(--color-teal-300);
+  --color-cyan-400: var(--color-teal-400);
+  --color-cyan-500: var(--color-teal-500);
+  --color-cyan-600: var(--color-teal-600);
+  --color-cyan-700: var(--color-teal-700);
+  --color-cyan-800: var(--color-teal-800);
+  --color-cyan-900: var(--color-teal-900);
+  --color-cyan-950: var(--color-teal-950);
+}
+
+/* next/font exposes the faces as CSS variables on <html> (see app/layout.tsx) */
+@theme inline {
+  --font-sans: var(--font-poppins), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-archivo), var(--font-poppins), ui-sans-serif, system-ui, sans-serif;
+  --font-display--font-variation-settings: 'wdth' 125;
+  --font-mono: var(--font-reddit-mono), ui-monospace, 'SF Mono', Menlo, monospace;
+}
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    background: var(--color-canvas);
+    color: var(--color-body);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: var(--text-base--line-height);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  ::selection {
+    background: var(--color-teal-100);
+    color: var(--color-ink);
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-asphalt);
+    outline-offset: 2px;
+  }
+  button:not(:disabled),
+  [role='button']:not(:disabled) {
+    cursor: pointer;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

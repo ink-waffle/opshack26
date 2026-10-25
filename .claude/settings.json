@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [],
-    "defaultMode": "bypassPermissions"
-  },
-  "enabledPlugins": {
-    "mattpocock-skills@claude-plugins-official": true
-  }
-}

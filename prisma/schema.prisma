@@ -5,4 +5,1271 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  schemas  = ["bahn", "control"]
+}
+
+// ───────────────────────────── control: our service ─────────────────────────────
+
+// Ordered weakest → strongest; lib/evidence owns the semantics.
+enum EvidenceLevel {
+  REQUESTED
+  STATED
+  QUOTED
+  PLANNED
+  BOOKED
+  OBSERVED
+  VERIFIED
+
+  @@schema("control")
+}
+
+enum FactSourceType {
+  BAHN_RECORD
+  TOOL
+  OPERATOR
+  AGENT_INTERPRETATION
+
+  @@schema("control")
+}
+
+enum RunStatus {
+  DETECTED
+  GATHERING
+  OPTIONS_READY
+  AWAITING_DECISION
+  EXECUTING
+  CLOSED
+  ESCALATED
+  FAILED
+
+  @@schema("control")
+}
+
+enum BlockKind {
+  deterministic
+  agent
+  wait
+  human
+  execute
+
+  @@schema("control")
+}
+
+enum BlockRunStatus {
+  RUNNING
+  WAITING
+  COMPLETED
+  FAILED
+  SKIPPED
+
+  @@schema("control")
+}
+
+enum CardKind {
+  DECISION
+  TRIAGE
+
+  @@schema("control")
+}
+
+enum CardStatus {
+  OPEN
+  APPROVED
+  EDITED
+  REJECTED
+  EXPIRED
+  CANCELLED
+
+  @@schema("control")
+}
+
+enum AmendmentKind {
+  INSTRUCTION
+  PARAMETER
+
+  @@schema("control")
+}
+
+enum AmendmentStatus {
+  PROPOSED
+  APPROVED
+  REJECTED
+
+  @@schema("control")
+}
+
+// Written only by lib/facts; observedAt is sim time, dedupeKey makes projections idempotent.
+model Fact {
+  id         String         @id @default(dbgenerated("(gen_random_uuid())::text"))
+  orderId    String?        @map("order_id")
+  runId      String?        @map("run_id")
+  kind       String
+  subject    String
+  statement  String
+  value      Json?
+  level      EvidenceLevel
+  sourceType FactSourceType @map("source_type")
+  sourceRef  String         @map("source_ref")
+  dedupeKey  String?        @unique @map("dedupe_key")
+  observedAt DateTime       @map("observed_at") @db.Timestamptz(3)
+  recordedAt DateTime       @default(now()) @map("recorded_at") @db.Timestamptz(3)
+
+  @@index([orderId, kind])
+  @@index([runId])
+  @@index([subject])
+  @@map("facts")
+  @@schema("control")
+}
+
+// One watchman inspection (Jev answers or a deterministic monitor hit) and where it was routed.
+model Signal {
+  id          String   @id @default(dbgenerated("(gen_random_uuid())::text"))
+  orderId     String?  @map("order_id")
+  source      String
+  sourceRef   String?  @map("source_ref")
+  triggerType String?  @map("trigger_type")
+  probability Float?
+  state       Json?
+  answers     Json?
+  routing     Json?
+  runId       String?  @map("run_id")
+  simAt       DateTime @map("sim_at") @db.Timestamptz(3)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([orderId, simAt])
+  @@index([triggerType])
+  @@map("signals")
+  @@schema("control")
+}
+
+model PlaybookRun {
+  id             String     @id @default(dbgenerated("(gen_random_uuid())::text"))
+  playbookId     String     @map("playbook_id")
+  orderId        String?    @map("order_id")
+  triggerType    String?    @map("trigger_type")
+  signalId       String?    @map("signal_id")
+  status         RunStatus  @default(DETECTED)
+  triggerRunId   String?    @map("trigger_run_id")
+  currentBlockId String?    @map("current_block_id")
+  context        Json?
+  result         Json?
+  error          String?
+  simStartedAt   DateTime?  @map("sim_started_at") @db.Timestamptz(3)
+  createdAt      DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime   @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+  closedAt       DateTime?  @map("closed_at") @db.Timestamptz(3)
+  blockRuns      BlockRun[]
+  cards          Card[]
+
+  @@index([orderId])
+  @@index([status])
+  @@index([playbookId, createdAt])
+  @@map("playbook_runs")
+  @@schema("control")
+}
+
+model BlockRun {
+  id         String         @id @default(dbgenerated("(gen_random_uuid())::text"))
+  runId      String         @map("run_id")
+  run        PlaybookRun    @relation(fields: [runId], references: [id], onDelete: Cascade)
+  blockId    String         @map("block_id")
+  kind       BlockKind
+  status     BlockRunStatus @default(RUNNING)
+  input      Json?
+  output     Json?
+  error      String?
+  model      String?
+  costUsd    Float?         @map("cost_usd")
+  durationMs Int?           @map("duration_ms")
+  transcript Json?
+  startedAt  DateTime       @default(now()) @map("started_at") @db.Timestamptz(3)
+  finishedAt DateTime?      @map("finished_at") @db.Timestamptz(3)
+
+  @@index([runId, startedAt])
+  @@map("block_runs")
+  @@schema("control")
+}
+
+// Operator decision card; decideBy is sim time and drives the control-room sort.
+model Card {
+  id               String       @id @default(dbgenerated("(gen_random_uuid())::text"))
+  runId            String?      @map("run_id")
+  run              PlaybookRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
+  orderId          String?      @map("order_id")
+  playbookId       String?      @map("playbook_id")
+  blockId          String?      @map("block_id")
+  kind             CardKind     @default(DECISION)
+  status           CardStatus   @default(OPEN)
+  title            String
+  summary          String
+  agentActions     Json?        @map("agent_actions")
+  factIds          String[]     @default([]) @map("fact_ids")
+  options          Json?
+  decideBy         DateTime?    @map("decide_by") @db.Timestamptz(3)
+  decideByReason   String?      @map("decide_by_reason")
+  decision         Json?
+  decidedBy        String?      @map("decided_by")
+  decidedAt        DateTime?    @map("decided_at") @db.Timestamptz(3)
+  waitpointTokenId String?      @map("waitpoint_token_id")
+  createdAt        DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@index([status, decideBy])
+  @@index([orderId])
+  @@index([runId])
+  @@map("cards")
+  @@schema("control")
+}
+
+model Amendment {
+  id           String          @id @default(dbgenerated("(gen_random_uuid())::text"))
+  playbookId   String          @map("playbook_id")
+  blockId      String?         @map("block_id")
+  kind         AmendmentKind
+  text         String
+  parameters   Json?
+  rationale    String?
+  sourceCardId String?         @map("source_card_id")
+  backtest     Json?
+  status       AmendmentStatus @default(PROPOSED)
+  proposedBy   String?         @map("proposed_by")
+  decidedBy    String?         @map("decided_by")
+  decidedAt    DateTime?       @map("decided_at") @db.Timestamptz(3)
+  createdAt    DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime        @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@index([playbookId, status])
+  @@index([sourceCardId])
+  @@map("amendments")
+  @@schema("control")
+}
+
+// Single row (id 'default'): simNow = anchorSim + (realNow - anchorReal) * speed.
+model SimClock {
+  id         String   @id @default("default")
+  anchorSim  DateTime @map("anchor_sim") @db.Timestamptz(3)
+  anchorReal DateTime @map("anchor_real") @db.Timestamptz(3)
+  speed      Float    @default(1)
+  updatedAt  DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("sim_clock")
+  @@schema("control")
+}
+
+// ───────────────────── bahn: Bahn's system, seeded from data/bahn/dataset ─────────────────────
+// One model per collection: typed columns named like the JSON keys plus `raw` (the full record).
+// Generated from the dataset profile; scripts/seed/bahn.ts fills columns by key via jsonb_populate_recordset.
+
+model BahnAddress {
+  id            String  @id
+  accessNote    String? @map("access_note")
+  addressLine1  String? @map("address_line1")
+  boundary      String?
+  city          String
+  country       String
+  kind          String
+  managedSiteId String? @map("managed_site_id")
+  name          String
+  openingHours  Json?   @map("opening_hours")
+  orderId       String? @map("order_id")
+  rawInput      String  @map("raw_input")
+  timezone      String
+  raw           Json
+
+  @@index([orderId])
+  @@map("addresses")
+  @@schema("bahn")
+}
+
+model BahnAgentProposal {
+  id                     String    @id
+  alertId                String?   @map("alert_id")
+  command                String
+  createdAt              DateTime  @map("created_at") @db.Timestamptz(3)
+  dependency             Json?
+  evidenceRefs           Json?     @map("evidence_refs")
+  execution              Json?
+  orderId                String    @map("order_id")
+  proposedByAgentId      String    @map("proposed_by_agent_id")
+  proposedPayload        Json?     @map("proposed_payload")
+  rationale              String
+  review                 Json?
+  status                 String
+  summary                String
+  supersededAt           DateTime? @map("superseded_at") @db.Timestamptz(3)
+  supersededByProposalId String?   @map("superseded_by_proposal_id")
+  targetId               String    @map("target_id")
+  targetType             String    @map("target_type")
+  raw                    Json
+
+  @@index([orderId])
+  @@map("agent_proposals")
+  @@schema("bahn")
+}
+
+model BahnAgent {
+  id    String  @id
+  kind  String?
+  scope String?
+  title String?
+  raw   Json
+
+  @@map("agents")
+  @@schema("bahn")
+}
+
+model BahnAlert {
+  id                                String    @id
+  acknowledgedAt                    DateTime? @map("acknowledged_at") @db.Timestamptz(3)
+  acknowledgementReason             String?   @map("acknowledgement_reason")
+  assignmentId                      String?   @map("assignment_id")
+  conversationId                    String?   @map("conversation_id")
+  decisionEvidenceRefs              Json?     @map("decision_evidence_refs")
+  driverReportMessageId             String?   @map("driver_report_message_id")
+  driverReportedEarliestDepartureAt DateTime? @map("driver_reported_earliest_departure_at") @db.Timestamptz(3)
+  evidenceRefs                      String[]  @default([]) @map("evidence_refs")
+  latestSiteConversationId          String?   @map("latest_site_conversation_id")
+  nextAction                        String?   @map("next_action")
+  orderId                           String    @map("order_id")
+  owner                             String?
+  priorDutyAssignmentId             String?   @map("prior_duty_assignment_id")
+  priorDutyObservationId            String?   @map("prior_duty_observation_id")
+  relatedWorkItemId                 String?   @map("related_work_item_id")
+  resolutionEvidenceRefs            String[]  @default([]) @map("resolution_evidence_refs")
+  resolutionMessageId               String?   @map("resolution_message_id")
+  resolutionReason                  String?   @map("resolution_reason")
+  resolvedAt                        DateTime? @map("resolved_at") @db.Timestamptz(3)
+  severity                          String
+  signal                            String
+  status                            String
+  summary                           String
+  triageBasisMessageId              String?   @map("triage_basis_message_id")
+  triggeredAt                       DateTime  @map("triggered_at") @db.Timestamptz(3)
+  workOwner                         String?   @map("work_owner")
+  raw                               Json
+
+  @@index([orderId])
+  @@index([status])
+  @@map("alerts")
+  @@schema("bahn")
+}
+
+model BahnAssignmentStep {
+  id                String    @id
+  assignmentId      String    @map("assignment_id")
+  cancelledAt       DateTime? @map("cancelled_at") @db.Timestamptz(3)
+  completedAt       DateTime? @map("completed_at") @db.Timestamptz(3)
+  endpointDetailId  String?   @map("endpoint_detail_id")
+  evidenceId        String?   @map("evidence_id")
+  evidenceType      String?   @map("evidence_type")
+  fromCity          String?   @map("from_city")
+  kind              String
+  note              String
+  orderId           String    @map("order_id")
+  relatedDocumentId String?   @map("related_document_id")
+  reservationId     String?   @map("reservation_id")
+  scheduledEndAt    DateTime? @map("scheduled_end_at") @db.Timestamptz(3)
+  scheduledStartAt  DateTime? @map("scheduled_start_at") @db.Timestamptz(3)
+  sequence          Int
+  sourceOptionId    String?   @map("source_option_id")
+  sourceSiteId      String?   @map("source_site_id")
+  status            String
+  title             String
+  toCity            String?   @map("to_city")
+  transportPointId  String?   @map("transport_point_id")
+  raw               Json
+
+  @@index([orderId])
+  @@index([assignmentId, sequence])
+  @@map("assignment_steps")
+  @@schema("bahn")
+}
+
+model BahnConversation {
+  id                       String    @id
+  assignmentId             String?   @map("assignment_id")
+  assignmentIds            String[]  @default([]) @map("assignment_ids")
+  category                 String
+  channel                  String
+  counterpartyId           String?   @map("counterparty_id")
+  counterpartyNameSnapshot String?   @map("counterparty_name_snapshot")
+  counterpartyType         String?   @map("counterparty_type")
+  followsConversationId    String?   @map("follows_conversation_id")
+  nextCheckAt              DateTime? @map("next_check_at") @db.Timestamptz(3)
+  offerId                  String?   @map("offer_id")
+  orderId                  String    @map("order_id")
+  owner                    String?
+  relatedOrderIds          String[]  @default([]) @map("related_order_ids")
+  sampleTier               String?   @map("sample_tier")
+  startedAt                DateTime  @map("started_at") @db.Timestamptz(3)
+  status                   String
+  updatedAt                DateTime  @map("updated_at") @db.Timestamptz(3)
+  waitingOn                String?   @map("waiting_on")
+  raw                      Json
+
+  @@index([orderId])
+  @@index([status])
+  @@map("conversations")
+  @@schema("bahn")
+}
+
+model BahnCustodyAssetEvent {
+  id                 String    @id
+  assetId            String?   @map("asset_id")
+  kind               String?
+  note               String?
+  occurredAt         DateTime? @map("occurred_at") @db.Timestamptz(3)
+  orderId            String?   @map("order_id")
+  sourceRefs         Json?     @map("source_refs")
+  verificationStatus String?   @map("verification_status")
+  raw                Json
+
+  @@index([orderId])
+  @@index([assetId])
+  @@map("custody_asset_events")
+  @@schema("bahn")
+}
+
+model BahnCustodyAsset {
+  id                         String    @id
+  assignmentId               String?   @map("assignment_id")
+  currentSourceRefs          Json?     @map("current_source_refs")
+  followupDueAt              DateTime? @map("followup_due_at") @db.Timestamptz(3)
+  followupOwner              String?   @map("followup_owner")
+  holderBasis                String?   @map("holder_basis")
+  holderId                   String?   @map("holder_id")
+  holderRole                 String?   @map("holder_role")
+  kind                       String?
+  label                      String?
+  nextAction                 String?   @map("next_action")
+  orderId                    String?   @map("order_id")
+  orderItemId                String?   @map("order_item_id")
+  physicalHandoverVerifiedAt DateTime? @map("physical_handover_verified_at") @db.Timestamptz(3)
+  relatedOrderId             String?   @map("related_order_id")
+  siteId                     String?   @map("site_id")
+  status                     String?
+  vehicleId                  String?   @map("vehicle_id")
+  raw                        Json
+
+  @@index([orderId])
+  @@map("custody_assets")
+  @@schema("bahn")
+}
+
+model BahnCustodyReport {
+  id                       String    @id
+  assignmentId             String?   @map("assignment_id")
+  continuityEvidenceStatus String?   @map("continuity_evidence_status")
+  deliveryEventId          String?   @map("delivery_event_id")
+  driverId                 String?   @map("driver_id")
+  locationEvidenceStatus   String?   @map("location_evidence_status")
+  orderId                  String?   @map("order_id")
+  pickupEventId            String?   @map("pickup_event_id")
+  reportedAt               DateTime? @map("reported_at") @db.Timestamptz(3)
+  reportedSecurity         String?   @map("reported_security")
+  segmentId                String?   @map("segment_id")
+  sourceMessageId          String?   @map("source_message_id")
+  vehicleId                String?   @map("vehicle_id")
+  raw                      Json
+
+  @@index([orderId])
+  @@map("custody_reports")
+  @@schema("bahn")
+}
+
+model BahnCustomer {
+  id          String @id
+  accountTier String @map("account_tier")
+  country     String
+  name        String
+  raw         Json
+
+  @@map("customers")
+  @@schema("bahn")
+}
+
+model BahnDocument {
+  id             String   @id
+  fileCount      Int      @map("file_count")
+  kind           String
+  medium         String?
+  orderId        String   @map("order_id")
+  pointId        String?  @map("point_id")
+  required       Boolean
+  signatureScope String?  @map("signature_scope")
+  status         String
+  updatedAt      DateTime @map("updated_at") @db.Timestamptz(3)
+  raw            Json
+
+  @@index([orderId])
+  @@map("documents")
+  @@schema("bahn")
+}
+
+model BahnDriver {
+  id          String  @id
+  active      Boolean
+  displayName String  @map("display_name")
+  homeCity    String  @map("home_city")
+  homeCountry String  @map("home_country")
+  raw         Json
+
+  @@map("drivers")
+  @@schema("bahn")
+}
+
+model BahnEndpointClaim {
+  id                        String    @id
+  claim                     String?
+  confidence                String?
+  endpointDetailId          String?   @map("endpoint_detail_id")
+  field                     String?
+  orderId                   String?   @map("order_id")
+  recordedAt                DateTime? @map("recorded_at") @db.Timestamptz(3)
+  resolutionBasisMessageIds String[]  @default([]) @map("resolution_basis_message_ids")
+  resolutionStatus          String?   @map("resolution_status")
+  resolvedAt                DateTime? @map("resolved_at") @db.Timestamptz(3)
+  selectedClaimId           String?   @map("selected_claim_id")
+  sourceId                  String?   @map("source_id")
+  sourceType                String?   @map("source_type")
+  raw                       Json
+
+  @@index([orderId])
+  @@index([endpointDetailId])
+  @@map("endpoint_claims")
+  @@schema("bahn")
+}
+
+model BahnExpense {
+  id                    String    @id
+  amountCents           Int       @map("amount_cents")
+  assignmentId          String    @map("assignment_id")
+  bookingReference      String?   @map("booking_reference")
+  costCountry           String?   @map("cost_country")
+  currency              String
+  driverId              String?   @map("driver_id")
+  kind                  String
+  merchant              String?
+  orderId               String    @map("order_id")
+  payer                 String
+  providerBasis         String?   @map("provider_basis")
+  receiptCount          Int       @map("receipt_count")
+  receiptFingerprint    String?   @map("receipt_fingerprint")
+  receiptState          String?   @map("receipt_state")
+  reimbursableToDriver  Boolean   @map("reimbursable_to_driver")
+  reservationId         String?   @map("reservation_id")
+  reviewNote            String?   @map("review_note")
+  reviewedAt            DateTime? @map("reviewed_at") @db.Timestamptz(3)
+  serviceAt             DateTime? @map("service_at") @db.Timestamptz(3)
+  status                String
+  submissionSource      String    @map("submission_source")
+  submittedAt           DateTime  @map("submitted_at") @db.Timestamptz(3)
+  supersededAt          DateTime? @map("superseded_at") @db.Timestamptz(3)
+  supersededByExpenseId String?   @map("superseded_by_expense_id")
+  supersedesExpenseId   String?   @map("supersedes_expense_id")
+  raw                   Json
+
+  @@index([orderId])
+  @@index([assignmentId])
+  @@map("expenses")
+  @@schema("bahn")
+}
+
+model BahnFerryTerminalEvent {
+  id               String    @id
+  assignmentId     String?   @map("assignment_id")
+  evidenceNote     String?   @map("evidence_note")
+  kind             String?
+  occurredAt       DateTime? @map("occurred_at") @db.Timestamptz(3)
+  orderId          String?   @map("order_id")
+  reason           String?
+  receiptReference String?   @map("receipt_reference")
+  recordedAt       DateTime? @map("recorded_at") @db.Timestamptz(3)
+  reservationId    String?   @map("reservation_id")
+  source           String?
+  terminalId       String?   @map("terminal_id")
+  vehicleId        String?   @map("vehicle_id")
+  raw              Json
+
+  @@index([orderId])
+  @@map("ferry_terminal_events")
+  @@schema("bahn")
+}
+
+model BahnFerryTerminal {
+  id                String   @id
+  city              String?
+  country           String?
+  isFictional       Boolean? @map("is_fictional")
+  locationPrecision String?  @map("location_precision")
+  name              String?
+  note              String?
+  timezone          String?
+  raw               Json
+
+  @@map("ferry_terminals")
+  @@schema("bahn")
+}
+
+model BahnIncident {
+  id                 String    @id
+  assignmentId       String?   @map("assignment_id")
+  kind               String?
+  locationVerified   Boolean?  @map("location_verified")
+  openedAt           DateTime? @map("opened_at") @db.Timestamptz(3)
+  orderId            String?   @map("order_id")
+  owner              String?
+  recoveryDecision   String?   @map("recovery_decision")
+  relatedRecordIds   String[]  @default([]) @map("related_record_ids")
+  reportedStopText   String?   @map("reported_stop_text")
+  reportedSymptom    String?   @map("reported_symptom")
+  resolvedAt         DateTime? @map("resolved_at") @db.Timestamptz(3)
+  status             String?
+  warningPhotoStatus String?   @map("warning_photo_status")
+  raw                Json
+
+  @@index([orderId])
+  @@map("incidents")
+  @@schema("bahn")
+}
+
+model BahnInternalNotification {
+  id                String    @id
+  activity          String?
+  actorId           String?   @map("actor_id")
+  alertId           String?   @map("alert_id")
+  deliveryState     String?   @map("delivery_state")
+  destination       String?
+  evidenceRefs      Json?     @map("evidence_refs")
+  occurredAt        DateTime? @map("occurred_at") @db.Timestamptz(3)
+  orderId           String?   @map("order_id")
+  preview           String?
+  proposalId        String?   @map("proposal_id")
+  sourceTriggeredAt DateTime? @map("source_triggered_at") @db.Timestamptz(3)
+  threadId          String?   @map("thread_id")
+  raw               Json
+
+  @@index([orderId])
+  @@map("internal_notifications")
+  @@schema("bahn")
+}
+
+model BahnMarketOfferDemandSignal {
+  id         String   @id
+  driverId   String   @map("driver_id")
+  kind       String
+  observedAt DateTime @map("observed_at") @db.Timestamptz(3)
+  offerId    String   @map("offer_id")
+  orderId    String   @map("order_id")
+  sampleTier String   @map("sample_tier")
+  source     String
+  raw        Json
+
+  @@index([orderId])
+  @@index([offerId])
+  @@map("market_offer_demand_signals")
+  @@schema("bahn")
+}
+
+model BahnMarketOfferDemandWindow {
+  id                    String   @id
+  activityRegime        String   @map("activity_regime")
+  ageBand               String   @map("age_band")
+  burstProfile          String   @map("burst_profile")
+  coverageNote          String   @map("coverage_note")
+  offerId               String   @map("offer_id")
+  offerStatusAtSnapshot String   @map("offer_status_at_snapshot")
+  orderId               String   @map("order_id")
+  passCount             Int      @map("pass_count")
+  routeKind             String   @map("route_kind")
+  sampleTier            String   @map("sample_tier")
+  source                String
+  viewCount             Int      @map("view_count")
+  windowEndAt           DateTime @map("window_end_at") @db.Timestamptz(3)
+  windowStartAt         DateTime @map("window_start_at") @db.Timestamptz(3)
+  raw                   Json
+
+  @@index([orderId])
+  @@map("market_offer_demand_windows")
+  @@schema("bahn")
+}
+
+model BahnMarketOfferExposure {
+  id         String    @id
+  createdAt  DateTime? @map("created_at") @db.Timestamptz(3)
+  decidedAt  DateTime? @map("decided_at") @db.Timestamptz(3)
+  driverId   String?   @map("driver_id")
+  expiresAt  DateTime? @map("expires_at") @db.Timestamptz(3)
+  notifiedAt DateTime? @map("notified_at") @db.Timestamptz(3)
+  offerId    String?   @map("offer_id")
+  orderId    String?   @map("order_id")
+  reason     String?
+  shownAt    DateTime? @map("shown_at") @db.Timestamptz(3)
+  status     String?
+  viewedAt   DateTime? @map("viewed_at") @db.Timestamptz(3)
+  raw        Json
+
+  @@index([orderId])
+  @@map("market_offer_exposures")
+  @@schema("bahn")
+}
+
+model BahnMarketOfferReachCheck {
+  id                               String    @id
+  attributedMessageId              String?   @map("attributed_message_id")
+  audienceMatchedCount             Int?      @map("audience_matched_count")
+  checkedAt                        DateTime? @map("checked_at") @db.Timestamptz(3)
+  feedAccessibleCount              Int?      @map("feed_accessible_count")
+  interpretationNote               String?   @map("interpretation_note")
+  offerId                          String?   @map("offer_id")
+  orderId                          String?   @map("order_id")
+  provisionallyPickupSuitableCount Int?      @map("provisionally_pickup_suitable_count")
+  sampleTier                       String?   @map("sample_tier")
+  screenedDriverCount              Int?      @map("screened_driver_count")
+  source                           String?
+  windowEndAt                      DateTime? @map("window_end_at") @db.Timestamptz(3)
+  windowStartAt                    DateTime? @map("window_start_at") @db.Timestamptz(3)
+  raw                              Json
+
+  @@index([orderId])
+  @@map("market_offer_reach_checks")
+  @@schema("bahn")
+}
+
+model BahnMarketOffer {
+  id                   String    @id
+  acceptedAt           DateTime? @map("accepted_at") @db.Timestamptz(3)
+  currency             String
+  executionAssumptions Json?     @map("execution_assumptions")
+  expiresAt            DateTime  @map("expires_at") @db.Timestamptz(3)
+  feeCents             Int       @map("fee_cents")
+  lines                Json?
+  orderId              String    @map("order_id")
+  orderIds             String[]  @default([]) @map("order_ids")
+  pricingNote          String?   @map("pricing_note")
+  publishedAt          DateTime  @map("published_at") @db.Timestamptz(3)
+  segmentIds           String[]  @default([]) @map("segment_ids")
+  status               String
+  type                 String
+  visibility           String
+  withdrawnAt          DateTime? @map("withdrawn_at") @db.Timestamptz(3)
+  raw                  Json
+
+  @@index([orderId])
+  @@map("market_offers")
+  @@schema("bahn")
+}
+
+model BahnMessage {
+  id                 String   @id
+  authorId           String   @map("author_id")
+  authorNameSnapshot String?  @map("author_name_snapshot")
+  authorType         String   @map("author_type")
+  authoredAt         DateTime @map("authored_at") @db.Timestamptz(3)
+  body               String
+  channel            String
+  conversationId     String   @map("conversation_id")
+  evidenceRefs       Json?    @map("evidence_refs")
+  language           String
+  orderId            String   @map("order_id")
+  recipientId        String   @map("recipient_id")
+  recipientType      String   @map("recipient_type")
+  visibility         String
+  raw                Json
+
+  @@index([orderId])
+  @@index([conversationId, authoredAt])
+  @@map("messages")
+  @@schema("bahn")
+}
+
+model BahnOperationalEvent {
+  id         String   @id
+  actorId    String?  @map("actor_id")
+  actorType  String   @map("actor_type")
+  changes    Json?
+  command    String
+  fromState  String?  @map("from_state")
+  orderId    String   @map("order_id")
+  recordedAt DateTime @map("recorded_at") @db.Timestamptz(3)
+  source     String
+  targetId   String   @map("target_id")
+  targetType String   @map("target_type")
+  toState    String?  @map("to_state")
+  raw        Json
+
+  @@index([orderId, recordedAt])
+  @@index([targetType, targetId])
+  @@map("operational_events")
+  @@schema("bahn")
+}
+
+model BahnOperator {
+  id    String @id
+  kind  String
+  title String
+  raw   Json
+
+  @@map("operators")
+  @@schema("bahn")
+}
+
+model BahnOrderEndpointDetail {
+  id                  String    @id
+  accessInstruction   String    @map("access_instruction")
+  accessStatus        String    @map("access_status")
+  addressId           String    @map("address_id")
+  boundary            String
+  contactHandle       String?   @map("contact_handle")
+  contactName         String?   @map("contact_name")
+  contactRole         String    @map("contact_role")
+  contactStatus       String    @map("contact_status")
+  lastConfirmedAt     DateTime? @map("last_confirmed_at") @db.Timestamptz(3)
+  lastConfirmedSource String?   @map("last_confirmed_source")
+  orderId             String    @map("order_id")
+  pointId             String    @map("point_id")
+  siteId              String?   @map("site_id")
+  statedAt            DateTime  @map("stated_at") @db.Timestamptz(3)
+  statedBy            String    @map("stated_by")
+  raw                 Json
+
+  @@index([orderId])
+  @@index([pointId])
+  @@map("order_endpoint_details")
+  @@schema("bahn")
+}
+
+model BahnOrderItem {
+  id        String @id
+  cmrMode   String @map("cmr_mode")
+  orderId   String @map("order_id")
+  role      String
+  vehicleId String @map("vehicle_id")
+  raw       Json
+
+  @@index([orderId])
+  @@map("order_items")
+  @@schema("bahn")
+}
+
+model BahnOrderNote {
+  id               String    @id
+  authorId         String?   @map("author_id")
+  authorType       String?   @map("author_type")
+  authoredAt       DateTime? @map("authored_at") @db.Timestamptz(3)
+  body             String?
+  orderId          String?   @map("order_id")
+  purpose          String?
+  relatedRecordIds String[]  @default([]) @map("related_record_ids")
+  visibility       String?
+  raw              Json
+
+  @@index([orderId])
+  @@map("order_notes")
+  @@schema("bahn")
+}
+
+model BahnOrder {
+  id                 String    @id
+  activePlanId       String?   @map("active_plan_id")
+  cancellationReason String?   @map("cancellation_reason")
+  cancelledAt        DateTime? @map("cancelled_at") @db.Timestamptz(3)
+  createdAt          DateTime  @map("created_at") @db.Timestamptz(3)
+  customerId         String    @map("customer_id")
+  customerReference  String    @map("customer_reference")
+  deliveryAddressId  String    @map("delivery_address_id")
+  deliverySiteId     String?   @map("delivery_site_id")
+  displayLane        String    @map("display_lane")
+  pickupAddressId    String    @map("pickup_address_id")
+  pickupSiteId       String?   @map("pickup_site_id")
+  readinessStatus    String    @map("readiness_status")
+  reference          String    @unique
+  routeKind          String    @map("route_kind")
+  source             String
+  status             String
+  updatedAt          DateTime  @map("updated_at") @db.Timestamptz(3)
+  raw                Json
+
+  @@index([status])
+  @@map("orders")
+  @@schema("bahn")
+}
+
+model BahnProof {
+  id               String    @id
+  assignmentStepId String?   @map("assignment_step_id")
+  captureRecipe    Json?     @map("capture_recipe")
+  fileCount        Int       @map("file_count")
+  instructions     String?
+  kind             String
+  orderId          String    @map("order_id")
+  pointId          String    @map("point_id")
+  required         Boolean
+  requiredBy       DateTime? @map("required_by") @db.Timestamptz(3)
+  reviewNote       String?   @map("review_note")
+  reviewedAt       DateTime? @map("reviewed_at") @db.Timestamptz(3)
+  source           String?
+  status           String
+  submittedAt      DateTime? @map("submitted_at") @db.Timestamptz(3)
+  raw              Json
+
+  @@index([orderId])
+  @@map("proofs")
+  @@schema("bahn")
+}
+
+model BahnSiteVisit {
+  id             String    @id
+  arrivedAt      DateTime? @map("arrived_at") @db.Timestamptz(3)
+  assignmentId   String?   @map("assignment_id")
+  leftAt         DateTime? @map("left_at") @db.Timestamptz(3)
+  orderId        String?   @map("order_id")
+  outcome        String?
+  siteId         String?   @map("site_id")
+  verifiedBySite Boolean?  @map("verified_by_site")
+  raw            Json
+
+  @@index([orderId])
+  @@map("site_visits")
+  @@schema("bahn")
+}
+
+model BahnSite {
+  id                    String  @id
+  accessNote            String  @map("access_note")
+  addressId             String  @map("address_id")
+  addressLine1          String  @map("address_line1")
+  advanceNoticeMinutes  Int     @map("advance_notice_minutes")
+  city                  String
+  country               String
+  customerId            String? @map("customer_id")
+  deliveryAccessNote    String  @map("delivery_access_note")
+  handoverMode          String  @map("handover_mode")
+  kind                  String
+  name                  String
+  openingHours          Json?   @map("opening_hours")
+  pickupAccessNote      String  @map("pickup_access_note")
+  pickupContactEmail    String  @map("pickup_contact_email")
+  releaseDocumentRule   String  @map("release_document_rule")
+  requiresSignedRelease Boolean @map("requires_signed_release")
+  timezone              String
+  raw                   Json
+
+  @@map("sites")
+  @@schema("bahn")
+}
+
+model BahnSupportInboxMessage {
+  id            String   @id
+  authorId      String   @map("author_id")
+  authorType    String   @map("author_type")
+  authoredAt    DateTime @map("authored_at") @db.Timestamptz(3)
+  body          String
+  channel       String
+  language      String
+  recipientId   String   @map("recipient_id")
+  recipientType String   @map("recipient_type")
+  threadId      String   @map("thread_id")
+  visibility    String
+  raw           Json
+
+  @@index([threadId])
+  @@map("support_inbox_messages")
+  @@schema("bahn")
+}
+
+model BahnSupportInboxThread {
+  id                      String    @id
+  candidateBasis          String?   @map("candidate_basis")
+  candidateBasisMessageId String?   @map("candidate_basis_message_id")
+  candidateOrderIds       String[]  @default([]) @map("candidate_order_ids")
+  category                String?
+  channel                 String?
+  counterpartyId          String?   @map("counterparty_id")
+  counterpartyType        String?   @map("counterparty_type")
+  linkState               String?   @map("link_state")
+  linkedOrderIds          String[]  @default([]) @map("linked_order_ids")
+  openedAt                DateTime? @map("opened_at") @db.Timestamptz(3)
+  owner                   String?
+  resolution              Json?
+  status                  String?
+  updatedAt               DateTime? @map("updated_at") @db.Timestamptz(3)
+  waitingOn               String?   @map("waiting_on")
+  raw                     Json
+
+  @@map("support_inbox_threads")
+  @@schema("bahn")
+}
+
+model BahnTerminalRoadEstimate {
+  id                        String   @id
+  approximateRoadDistanceKm Int      @map("approximate_road_distance_km")
+  coverage                  String
+  driveMinutesHigh          Int      @map("drive_minutes_high")
+  driveMinutesLow           Int      @map("drive_minutes_low")
+  excludes                  String[] @default([])
+  fromCity                  String   @map("from_city")
+  fromCountry               String   @map("from_country")
+  note                      String
+  source                    String
+  toTerminalId              String   @map("to_terminal_id")
+  raw                       Json
+
+  @@map("terminal_road_estimates")
+  @@schema("bahn")
+}
+
+model BahnTimeWindow {
+  id                   String    @id
+  commitmentDeadlineAt DateTime? @map("commitment_deadline_at") @db.Timestamptz(3)
+  deadlineSource       String?   @map("deadline_source")
+  deadlineStatedAt     DateTime? @map("deadline_stated_at") @db.Timestamptz(3)
+  endAt                DateTime  @map("end_at") @db.Timestamptz(3)
+  isSelected           Boolean   @map("is_selected")
+  orderId              String    @map("order_id")
+  pointId              String    @map("point_id")
+  purpose              String
+  source               String
+  startAt              DateTime  @map("start_at") @db.Timestamptz(3)
+  statedAt             DateTime? @map("stated_at") @db.Timestamptz(3)
+  timezone             String
+  raw                  Json
+
+  @@index([orderId])
+  @@index([pointId])
+  @@map("time_windows")
+  @@schema("bahn")
+}
+
+model BahnTrackingObservation {
+  id                  String   @id
+  assignmentId        String   @map("assignment_id")
+  confidence          String?
+  contextNote         String?  @map("context_note")
+  distanceRemainingKm Int      @map("distance_remaining_km")
+  estimatedDeliveryAt DateTime @map("estimated_delivery_at") @db.Timestamptz(3)
+  locationQuality     String   @map("location_quality")
+  observationKind     String?  @map("observation_kind")
+  observedAt          DateTime @map("observed_at") @db.Timestamptz(3)
+  orderId             String   @map("order_id")
+  progressFraction    Float    @map("progress_fraction")
+  receivedAt          DateTime @map("received_at") @db.Timestamptz(3)
+  reservationId       String?  @map("reservation_id")
+  segmentId           String   @map("segment_id")
+  source              String
+  uploadBatchId       String?  @map("upload_batch_id")
+  raw                 Json
+
+  @@index([orderId])
+  @@index([assignmentId, observedAt])
+  @@map("tracking_observations")
+  @@schema("bahn")
+}
+
+model BahnTransportPlan {
+  id          String    @id
+  activatedAt DateTime? @map("activated_at") @db.Timestamptz(3)
+  createdAt   DateTime  @map("created_at") @db.Timestamptz(3)
+  orderId     String    @map("order_id")
+  replacedAt  DateTime? @map("replaced_at") @db.Timestamptz(3)
+  source      String
+  status      String
+  version     Int
+  raw         Json
+
+  @@index([orderId])
+  @@map("transport_plans")
+  @@schema("bahn")
+}
+
+model BahnTransportPoint {
+  id            String  @id
+  addressId     String  @map("address_id")
+  orderBoundary String? @map("order_boundary")
+  planId        String  @map("plan_id")
+  role          String
+  sequence      Int
+  siteId        String? @map("site_id")
+  raw           Json
+
+  @@index([planId, sequence])
+  @@map("transport_points")
+  @@schema("bahn")
+}
+
+model BahnTransportSegment {
+  id            String @id
+  distanceKm    Int    @map("distance_km")
+  fromPointId   String @map("from_point_id")
+  orderItemId   String @map("order_item_id")
+  planId        String @map("plan_id")
+  sequence      Int
+  status        String
+  toPointId     String @map("to_point_id")
+  transportMode String @map("transport_mode")
+  raw           Json
+
+  @@index([planId, sequence])
+  @@map("transport_segments")
+  @@schema("bahn")
+}
+
+model BahnTravelConfirmation {
+  id               String    @id
+  assignmentId     String?   @map("assignment_id")
+  kind             String?
+  orderId          String?   @map("order_id")
+  report           String?
+  reportedAt       DateTime? @map("reported_at") @db.Timestamptz(3)
+  reporterDriverId String?   @map("reporter_driver_id")
+  reservationId    String?   @map("reservation_id")
+  raw              Json
+
+  @@index([orderId])
+  @@map("travel_confirmations")
+  @@schema("bahn")
+}
+
+model BahnTravelOption {
+  id                      String    @id
+  arrivalAt               DateTime  @map("arrival_at") @db.Timestamptz(3)
+  assignmentId            String?   @map("assignment_id")
+  capacityNote            String    @map("capacity_note")
+  checkInCutoffAt         DateTime? @map("check_in_cutoff_at") @db.Timestamptz(3)
+  checkedAt               DateTime  @map("checked_at") @db.Timestamptz(3)
+  connectionCount         Int?      @map("connection_count")
+  currency                String
+  dataOrigin              String?   @map("data_origin")
+  departureAt             DateTime  @map("departure_at") @db.Timestamptz(3)
+  fromCity                String    @map("from_city")
+  kind                    String
+  localTransferHours      Float?    @map("local_transfer_hours")
+  orderId                 String    @map("order_id")
+  provider                String
+  quoteCents              Int?      @map("quote_cents")
+  roadTimeToTerminalHours Int?      @map("road_time_to_terminal_hours")
+  status                  String
+  toCity                  String    @map("to_city")
+  raw                     Json
+
+  @@index([orderId])
+  @@index([assignmentId])
+  @@map("travel_options")
+  @@schema("bahn")
+}
+
+model BahnTravelReservation {
+  id                                     String    @id
+  amendmentRequest                       Json?     @map("amendment_request")
+  arrivalConfirmation                    String?   @map("arrival_confirmation")
+  assignmentId                           String    @map("assignment_id")
+  boardingConfirmation                   String?   @map("boarding_confirmation")
+  bookedAt                               DateTime  @map("booked_at") @db.Timestamptz(3)
+  bookingBasis                           String?   @map("booking_basis")
+  bookingReference                       String    @map("booking_reference")
+  cancelledAt                            DateTime? @map("cancelled_at") @db.Timestamptz(3)
+  checkInAt                              DateTime? @map("check_in_at") @db.Timestamptz(3)
+  checkInConfirmation                    String?   @map("check_in_confirmation")
+  checkInCutoffAt                        DateTime? @map("check_in_cutoff_at") @db.Timestamptz(3)
+  checkOutAt                             DateTime? @map("check_out_at") @db.Timestamptz(3)
+  city                                   String?
+  currency                               String?
+  dataOrigin                             String?   @map("data_origin")
+  departureAt                            DateTime  @map("departure_at") @db.Timestamptz(3)
+  destinationTerminal                    String?   @map("destination_terminal")
+  destinationTerminalArrivalConfirmation String?   @map("destination_terminal_arrival_confirmation")
+  destinationTerminalId                  String?   @map("destination_terminal_id")
+  expectedArrivalAt                      DateTime  @map("expected_arrival_at") @db.Timestamptz(3)
+  fareCents                              Int?      @map("fare_cents")
+  fromCity                               String?   @map("from_city")
+  itineraryGroupId                       String?   @map("itinerary_group_id")
+  journeyState                           String?   @map("journey_state")
+  journeyStateBasis                      Json?     @map("journey_state_basis")
+  kind                                   String
+  legSequence                            Int?      @map("leg_sequence")
+  localTransferHours                     Float?    @map("local_transfer_hours")
+  orderId                                String    @map("order_id")
+  originTerminal                         String?   @map("origin_terminal")
+  originTerminalId                       String?   @map("origin_terminal_id")
+  provider                               String?
+  replacementEvidenceId                  String?   @map("replacement_evidence_id")
+  replacementReason                      String?   @map("replacement_reason")
+  replacementReservationId               String?   @map("replacement_reservation_id")
+  replacesReservationId                  String?   @map("replaces_reservation_id")
+  routeLabel                             String    @map("route_label")
+  scheduleBasis                          Json?     @map("schedule_basis")
+  snapshotJourneyState                   String?   @map("snapshot_journey_state")
+  sourceOptionId                         String?   @map("source_option_id")
+  status                                 String
+  terminalRoadEstimateId                 String?   @map("terminal_road_estimate_id")
+  toCity                                 String?   @map("to_city")
+  verifiedMilestones                     Json?     @map("verified_milestones")
+  raw                                    Json
+
+  @@index([orderId])
+  @@index([assignmentId])
+  @@map("travel_reservations")
+  @@schema("bahn")
+}
+
+model BahnVehicle {
+  id           String  @id
+  fuel         String
+  make         String
+  model        String
+  modelYear    Int     @map("model_year")
+  registration String?
+  syntheticVin String? @map("synthetic_vin")
+  raw          Json
+
+  @@map("vehicles")
+  @@schema("bahn")
+}
+
+model BahnWorkAssignment {
+  id                         String    @id
+  acceptedAt                 DateTime  @map("accepted_at") @db.Timestamptz(3)
+  cancellationPayoutDecision String?   @map("cancellation_payout_decision")
+  cancellationReason         String?   @map("cancellation_reason")
+  cancelledAt                DateTime? @map("cancelled_at") @db.Timestamptz(3)
+  completedAt                DateTime? @map("completed_at") @db.Timestamptz(3)
+  currency                   String
+  driverHistory              Json?     @map("driver_history")
+  driverId                   String    @map("driver_id")
+  feeCents                   Int       @map("fee_cents")
+  orderId                    String    @map("order_id")
+  positioning                Json?
+  segmentIds                 String[]  @default([]) @map("segment_ids")
+  sourceOfferId              String    @map("source_offer_id")
+  startedAt                  DateTime? @map("started_at") @db.Timestamptz(3)
+  status                     String
+  raw                        Json
+
+  @@index([orderId])
+  @@index([driverId])
+  @@map("work_assignments")
+  @@schema("bahn")
+}
+
+model BahnWorkItem {
+  id              String    @id
+  closedAt        DateTime? @map("closed_at") @db.Timestamptz(3)
+  createdBy       String    @map("created_by")
+  dueAt           DateTime  @map("due_at") @db.Timestamptz(3)
+  kind            String
+  nextAction      String    @map("next_action")
+  openedAt        DateTime  @map("opened_at") @db.Timestamptz(3)
+  orderId         String    @map("order_id")
+  owner           String
+  priority        String
+  relatedOrderIds String[]  @default([]) @map("related_order_ids")
+  sourceRefs      Json?     @map("source_refs")
+  status          String
+  summary         String
+  raw             Json
+
+  @@index([orderId])
+  @@index([status])
+  @@map("work_items")
+  @@schema("bahn")
 }
