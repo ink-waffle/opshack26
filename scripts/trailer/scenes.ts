@@ -282,7 +282,7 @@ const nextRun: Scene = {
   run: async (ctx) => {
     const { d, data } = ctx;
     const page = d.page;
-    await d.goto({ path: cardPath(data, 'CD-420360'), wait: 'What happened' });
+    await d.goto({ path: cardPath(data, 'CD-420154'), wait: 'What happened' });
     const optionA = page.locator('div[class*="grid-cols-[2rem"]').first();
     const why = optionA.locator('p', { hasText: 'Why:' }).first();
     const wb = await d.box(why, { inflate: 8 });
@@ -465,7 +465,7 @@ const playbook: Scene = {
     await captionHold(
       d,
       'Playbooks',
-      'Click a step: its instructions and its tools. Nothing else.',
+      'Click a step: its instructions, its tools and its fixed branches.',
       2.6
     );
     await d.play(0.3, d.fadeCursor(0));
@@ -560,7 +560,7 @@ const meta: Scene = {
     await captionHold(
       d,
       'Backtest on recorded runs',
-      `Replayed before anyone sees it: follows the correction ${nums}.`,
+      `Replayed on recorded runs first. Judge’s confidence: ${nums}.`,
       3.0
     );
     await d.play(0.3, d.ring(null, 0));
@@ -594,7 +594,7 @@ const OUTRO_TILES: { still: string; name: string; line: string }[] = [
     name: 'Watchman',
     line: 'Reads every message and clock, starts the right playbook.',
   },
-  { still: 'playbook', name: 'Playbooks', line: 'Fixed diagrams. AI works only inside the steps.' },
+  { still: 'playbook', name: 'Playbooks', line: 'Fixed diagrams, fixed branches. AI only fills them in.' },
   {
     still: 'proven',
     name: 'Facts and rules',
